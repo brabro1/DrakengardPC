@@ -1,5 +1,6 @@
 #include "Common.h"
 #include "Pad.h"
+#include "runtime/ee_scheduler.h"
 
 namespace ps2_stubs
 {
@@ -7,6 +8,7 @@ namespace ps2_stubs
     {
         constexpr uint8_t kPadModeDigital = 0x41;
         constexpr uint8_t kPadModeDualShock = 0x73;
+        constexpr uint8_t kPadModeDualShockPressure = 0x79;
         constexpr uint8_t kPadAnalogCenter = 0x80;
         constexpr int32_t kPadTypeDigital = 4;
         constexpr int32_t kPadTypeDualShock = 7;
@@ -32,6 +34,82 @@ namespace ps2_stubs
         constexpr uint16_t kPadBtnCircle = 1u << 13;
         constexpr uint16_t kPadBtnCross = 1u << 14;
         constexpr uint16_t kPadBtnSquare = 1u << 15;
+
+        // Deterministic input for automated runs:
+        // PS2X_PAD_SCRIPT="tick:button[+button][:holdTicks],..." presses the listed
+        // buttons from VSync tick `tick` for `holdTicks` (default 6) on every port.
+        struct PadScriptStep
+        {
+            uint64_t tick = 0;
+            uint64_t hold = 6;
+            uint16_t mask = 0;
+        };
+
+        const std::vector<PadScriptStep> &padScript()
+        {
+            static const std::vector<PadScriptStep> steps = []()
+            {
+                std::vector<PadScriptStep> out;
+                const char *env = std::getenv("PS2X_PAD_SCRIPT");
+                if (!env)
+                {
+                    return out;
+                }
+                static const std::unordered_map<std::string, uint16_t> names = {
+                    {"select", kPadBtnSelect}, {"l3", kPadBtnL3}, {"r3", kPadBtnR3}, {"start", kPadBtnStart},
+                    {"up", kPadBtnUp}, {"right", kPadBtnRight}, {"down", kPadBtnDown}, {"left", kPadBtnLeft},
+                    {"l2", kPadBtnL2}, {"r2", kPadBtnR2}, {"l1", kPadBtnL1}, {"r1", kPadBtnR1},
+                    {"triangle", kPadBtnTriangle}, {"circle", kPadBtnCircle}, {"cross", kPadBtnCross},
+                    {"square", kPadBtnSquare}};
+                std::stringstream all(env);
+                std::string item;
+                while (std::getline(all, item, ','))
+                {
+                    std::stringstream fields(item);
+                    std::string tick, buttons, hold;
+                    std::getline(fields, tick, ':');
+                    std::getline(fields, buttons, ':');
+                    std::getline(fields, hold, ':');
+                    PadScriptStep step;
+                    step.tick = std::strtoull(tick.c_str(), nullptr, 10);
+                    if (!hold.empty())
+                    {
+                        step.hold = std::strtoull(hold.c_str(), nullptr, 10);
+                    }
+                    std::stringstream parts(buttons);
+                    std::string name;
+                    while (std::getline(parts, name, '+'))
+                    {
+                        auto it = names.find(name);
+                        if (it != names.end())
+                        {
+                            step.mask |= it->second;
+                        }
+                        else
+                        {
+                            std::cerr << "[pad:script] unknown button '" << name << "'" << std::endl;
+                        }
+                    }
+                    out.push_back(step);
+                }
+                std::cout << "[pad:script] " << out.size() << " step(s) loaded" << std::endl;
+                return out;
+            }();
+            return steps;
+        }
+
+        uint16_t scriptedPressMask(uint64_t tick)
+        {
+            uint16_t mask = 0;
+            for (const PadScriptStep &step : padScript())
+            {
+                if (tick >= step.tick && tick < step.tick + step.hold)
+                {
+                    mask |= step.mask;
+                }
+            }
+            return mask;
+        }
 
         struct PadInputState
         {
@@ -245,7 +323,12 @@ namespace ps2_stubs
         void fillPadStatus(uint8_t *data, const PadInputState &state, const PadPortState &portState)
         {
             std::memset(data, 0, 32);
-            data[1] = portState.analogMode ? kPadModeDualShock : kPadModeDigital;
+            // DUALSHOCK 2 IDs: 0x41 digital, 0x73 analog, 0x79 analog with pressure-
+            // sensitive buttons (18-byte reply). Drakengard rejects port-0 data
+            // unless the pad reports 0x79 after scePadEnterPressMode.
+            data[1] = !portState.analogMode         ? kPadModeDigital
+                      : portState.pressureEnabled ? kPadModeDualShockPressure
+                                                  : kPadModeDualShock;
             data[2] = static_cast<uint8_t>(state.buttons & 0xFFu);
             data[3] = static_cast<uint8_t>((state.buttons >> 8) & 0xFFu);
             data[4] = state.rx;
@@ -313,9 +396,35 @@ namespace ps2_stubs
                     applyGamepadState(state);
                     applyKeyboardState(state, portState.analogMode);
                 }
+                if (runtime && !padScript().empty())
+                {
+                    const uint64_t tick = runtime->eeScheduler().currentVSyncTick();
+                    if (const uint16_t pressed = scriptedPressMask(tick))
+                    {
+                        static uint64_t lastLoggedTick = ~0ull;
+                        if (lastLoggedTick == ~0ull || tick >= lastLoggedTick + 30u)
+                        {
+                            lastLoggedTick = tick;
+                            std::cout << "[pad:script] tick=" << tick << " press=0x" << std::hex << pressed
+                                      << std::dec << std::endl;
+                        }
+                        state.buttons = static_cast<uint16_t>(state.buttons & ~pressed);
+                    }
+                }
             }
 
             fillPadStatus(outData, state, portState);
+            if (!padScript().empty() && state.buttons != 0xFFFFu)
+            {
+                static uint32_t dataLogs = 0;
+                if (dataLogs++ < 6u)
+                {
+                    std::cout << "[pad:script] port=" << port << " addr=0x" << std::hex << dataAddr << " data="
+                              << static_cast<int>(outData[0]) << ',' << static_cast<int>(outData[1]) << ','
+                              << static_cast<int>(outData[2]) << ',' << static_cast<int>(outData[3]) << std::dec
+                              << std::endl;
+                }
+            }
 
             {
                 std::lock_guard<std::mutex> lock(g_padStateMutex);
@@ -526,17 +635,24 @@ namespace ps2_stubs
         case 2: // PAD_MODECUREXID
             setReturnS32(ctx, currentId);
             return;
-        case 3: // PAD_MODECUROFFS
-            setReturnS32(ctx, 0);
+        case 3: // PAD_MODECUROFFS: index of the current mode in the table below
+            setReturnS32(ctx, portState->analogMode ? 1 : 0);
             return;
         case 4: // PAD_MODETABLE
+            // A DUALSHOCK 2 starts in digital mode but lists both modes, so games
+            // can switch it to analog with scePadSetMainMode. Reporting a single
+            // digital mode makes analog-only titles (Drakengard) never enable it.
             if (index == -1)
             {
-                setReturnS32(ctx, 1); // one available mode
+                setReturnS32(ctx, 2);
             }
             else if (index == 0)
             {
-                setReturnS32(ctx, currentId);
+                setReturnS32(ctx, kPadTypeDigital);
+            }
+            else if (index == 1)
+            {
+                setReturnS32(ctx, kPadTypeDualShock);
             }
             else
             {

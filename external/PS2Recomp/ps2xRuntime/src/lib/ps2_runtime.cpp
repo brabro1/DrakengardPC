@@ -2444,8 +2444,18 @@ void PS2Runtime::run()
         gameThreadFinished.store(true, std::memory_order_release); });
 
     uint64_t tick = 0;
+    uint64_t sampleTick = 0;
     while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
     {
+        // Low-rate position sample (every 300 host frames) so hangs can be located
+        // in builds without aggressive logging.
+        if ((++sampleTick % 300u) == 0u)
+        {
+            RUNTIME_LOG("[run:sample] frame=" << sampleTick << " vsync=" << m_eeScheduler->currentVSyncTick()
+                                              << " pc=0x" << std::hex << m_debugPc.load(std::memory_order_relaxed)
+                                              << " ra=0x" << m_debugRa.load(std::memory_order_relaxed) << std::dec
+                                              << " dma=" << m_memory.dmaStartCount() << std::endl);
+        }
         PS2_IF_AGRESSIVE_LOGS({
             tick++;
             if ((tick % 120) == 0)

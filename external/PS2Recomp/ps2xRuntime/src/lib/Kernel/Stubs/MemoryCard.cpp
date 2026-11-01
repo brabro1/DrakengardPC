@@ -80,6 +80,9 @@ namespace ps2_stubs
         {
             std::string currentDir = "/";
             bool formatted = true;
+            // mcman reports the first successful probe after init as a card change
+            // (sceMcSync result -1/-2); later probes of the same card return 0.
+            bool insertionReported = false;
         };
 
         std::mutex g_mcStateMutex;
@@ -849,10 +852,44 @@ namespace ps2_stubs
 
     void sceMcGetEntSpace(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        // mcman_getentspace: -4 when the directory does not exist, otherwise the
+        // number of unused entry slots in its clusters (two 512-byte entries per
+        // 1 KB cluster). Host directories have no deleted entries, so only the
+        // parity of the entry count (including "." and "..") can leave a free slot.
+        // Games use the -4 answer to detect "no save directory yet".
+        const int32_t port = static_cast<int32_t>(getRegU32(ctx, 4));
+        const int32_t slot = static_cast<int32_t>(getRegU32(ctx, 5));
+        const std::string rawPath = readPs2CStringBounded(rdram, getRegU32(ctx, 6), kMcMaxPathLen);
+        int32_t result = kMcResultNoEntry;
         {
             std::lock_guard<std::mutex> lock(g_mcStateMutex);
-            setMcCommandResultLocked(kMcCmdGetEntSpace, 1024);
+            if (isValidMcPortSlot(port, slot))
+            {
+                if (!g_mcPorts[static_cast<size_t>(port)].formatted)
+                {
+                    result = kMcResultNoFormat;
+                }
+                else
+                {
+                    ensureMcRootExists(port);
+                    const std::string guestPath = normalizeGuestMcPathLocked(port, rawPath.empty() ? "." : rawPath);
+                    const std::filesystem::path hostDir = guestMcPathToHostPath(port, guestPath);
+                    std::error_code ec;
+                    if (std::filesystem::is_directory(hostDir, ec) && !ec)
+                    {
+                        size_t entries = 2u;
+                        for (auto it = std::filesystem::directory_iterator(hostDir, ec);
+                             !ec && it != std::filesystem::directory_iterator(); it.increment(ec))
+                        {
+                            ++entries;
+                        }
+                        result = static_cast<int32_t>(entries & 1u);
+                    }
+                }
+            }
+            setMcCommandResultLocked(kMcCmdGetEntSpace, result);
         }
+        RUNTIME_LOG("[MC] GetEntSpace port=" << port << " '" << rawPath << "' -> result=" << result);
         setReturnS32(ctx, 0);
     }
 
@@ -877,7 +914,19 @@ namespace ps2_stubs
                 cardType = kMcTypePs2;
                 freeBlocks = state.formatted ? kMcFreeClusters : 0;
                 format = state.formatted ? kMcFormatted : kMcUnformatted;
-                result = state.formatted ? kMcResultSucceed : kMcResultNoFormat;
+                if (!state.formatted)
+                {
+                    result = kMcResultNoFormat;
+                }
+                else if (!state.insertionReported)
+                {
+                    state.insertionReported = true;
+                    result = kMcResultChangedCard;
+                }
+                else
+                {
+                    result = kMcResultSucceed;
+                }
             }
 
             setMcCommandResultLocked(kMcCmdGetInfo, result);
@@ -929,6 +978,7 @@ namespace ps2_stubs
             {
                 state.currentDir = "/";
                 state.formatted = true;
+                state.insertionReported = false;
             }
         }
         ensureMcRootExists(0);

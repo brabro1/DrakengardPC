@@ -600,9 +600,19 @@ void register_ps2_runtime_io_tests()
             setRegU32(test.ctx, 8, formatAddr);
             ps2_stubs::sceMcGetInfo(test.rdram.data(), &test.ctx, nullptr);
 
+            // libmc: the first probe of a card reports -1 ("formatted card inserted
+            // since last getInfo call"); probing the same card again reports 0.
             int32_t cmd = 0;
-            t.Equals(syncMc(test.rdram, &cmd), 0, "formatted cards should report success through sceMcSync");
+            t.Equals(syncMc(test.rdram, &cmd), -1, "first probe of a formatted card should report a newly inserted card");
             t.Equals(cmd, 0x01, "sceMcSync should report GETINFO as the last command");
+            clearContext(test.ctx);
+            setRegU32(test.ctx, 4, 0u);
+            setRegU32(test.ctx, 5, 0u);
+            setRegU32(test.ctx, 6, typeAddr);
+            setRegU32(test.ctx, 7, freeAddr);
+            setRegU32(test.ctx, 8, formatAddr);
+            ps2_stubs::sceMcGetInfo(test.rdram.data(), &test.ctx, nullptr);
+            t.Equals(syncMc(test.rdram, &cmd), 0, "formatted cards should report success through sceMcSync");
             t.Equals(readGuestS32(test.rdram.data(), typeAddr), 2, "sceMcGetInfo should report a PS2 memory card");
             t.Equals(readGuestS32(test.rdram.data(), formatAddr), 1, "sceMcGetInfo should report a formatted card");
 

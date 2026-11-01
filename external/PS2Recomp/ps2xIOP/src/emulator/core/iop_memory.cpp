@@ -1,7 +1,9 @@
 #include "iop_memory.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <vector>
 
 namespace ps2x::iop::detail
 {
@@ -299,7 +301,11 @@ namespace ps2x::iop::detail
             return address;
         }
 
-        uint32_t candidate = alignUp(m_heapCursor, alignment);
+        // First fit from the heap base so freed blocks are reused, as the IOP
+        // kernel's sysmem does. Starting at the high-water cursor leaked every
+        // freed block: games that cycle streaming buffers (Drakengard's 256 KB
+        // movie buffer) ran out of IOP heap with most of it free.
+        uint32_t candidate = alignUp(HeapBase, alignment);
         for (;;)
         {
             bool overlap = false;
@@ -316,7 +322,13 @@ namespace ps2x::iop::detail
                 break;
         }
         if (candidate > HeapLimit || size > HeapLimit - candidate)
+        {
+            static uint32_t failures = 0u;
+            if (failures++ < 8u)
+                std::fprintf(stderr, "[iop:heap] allocation of %u bytes failed (largest free block %u, %zu blocks in use)\n",
+                             size, maxFreeMemory(), m_allocations.size());
             return 0u;
+        }
         m_allocations.push_back({candidate, size});
         markOwned(candidate, size);
         m_heapCursor = std::max(m_heapCursor, candidate + size);
@@ -339,7 +351,24 @@ namespace ps2x::iop::detail
 
     uint32_t IopMemory::maxFreeMemory() const
     {
-        return m_heapCursor < HeapLimit ? HeapLimit - m_heapCursor : 0u;
+        // Largest contiguous hole between live allocations (QueryMaxFreeMemSize).
+        std::vector<Allocation> blocks;
+        for (const Allocation &block : m_allocations)
+            if (block.address + block.size > HeapBase && block.address < HeapLimit)
+                blocks.push_back(block);
+        std::sort(blocks.begin(), blocks.end(), [](const Allocation &a, const Allocation &b)
+                  { return a.address < b.address; });
+        uint32_t largest = 0u;
+        uint32_t cursor = HeapBase;
+        for (const Allocation &block : blocks)
+        {
+            if (block.address > cursor)
+                largest = std::max(largest, block.address - cursor);
+            cursor = std::max(cursor, block.address + block.size);
+        }
+        if (cursor < HeapLimit)
+            largest = std::max(largest, HeapLimit - cursor);
+        return largest;
     }
 
     std::optional<IopMemory::Allocation> IopMemory::allocationContaining(uint32_t address) const

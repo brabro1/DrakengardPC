@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <cctype>
 
+#include "runtime/ps2_gs_irq.h"
+
 namespace
 {
     constexpr uint32_t kCdSectorSize = 2048;

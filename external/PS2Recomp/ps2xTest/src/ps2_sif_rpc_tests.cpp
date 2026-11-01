@@ -399,8 +399,9 @@ void register_ps2_sif_rpc_tests()
             PS2Runtime::setIoPaths(oldPaths);
 
             t.IsTrue(getInfoResult.handled, "MCSERV get info RPC should be handled");
-            t.Equals(readGuestStruct<int32_t>(env.rdram.data(), kRecvAddr), 0,
-                     "get info result should succeed");
+            // First probe after init: libmc reports -1, a formatted card newly inserted.
+            t.Equals(readGuestStruct<int32_t>(env.rdram.data(), kRecvAddr), -1,
+                     "get info result should report a newly inserted formatted card");
             t.Equals(readGuestStruct<int32_t>(env.rdram.data(), kEndParamAddr + 0u), 2,
                      "get info should report PS2 card type");
             t.Equals(readGuestStruct<int32_t>(env.rdram.data(), kEndParamAddr + 4u), 0x2000,
