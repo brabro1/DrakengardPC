@@ -1,0 +1,41 @@
+# --- Game-derived and proprietary material: never commit ---------------------
+# Everything extracted from the user's disc, generated from the game ELF, or
+# produced while running the game lives under work/ (see README "Data layout").
+/work/
+*.iso
+*.ISO
+*.bin
+*.BIN
+*.irx
+*.IRX
+*.IMG
+*.elf
+*.ELF
+SLUS_*
+SLES_*
+SLPM_*
+SYSTEM.CNF
+*.ps2
+*.mc2
+*.pnach
+bios/
+memcards/
+saves/
+
+# --- Build output --------------------------------------------------------------
+/build/
+/out/
+external/PS2Recomp/out/
+external/PS2Recomp/build/
+CMakeUserPresets.json
+compile_commands.json
+
+# --- Tooling caches ------------------------------------------------------------
+__pycache__/
+*.pyc
+.vs/
+.vscode/
+*.log
+
+# Runtime trace output (written to the current directory)
+ps2_log.txt

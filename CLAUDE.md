@@ -1,0 +1,49 @@
+# DrakengardPC — notes for future sessions
+
+Native Windows port of Drakengard (USA, SLUS-20732 v1.00) by static recompilation with a
+vendored PS2Recomp (`external/PS2Recomp`, base `e5636981a`). Read PROGRESS.md first: it has
+the current blocker and next actions.
+
+## Rules
+
+- Never commit or upload anything from the disc or generated from it: `work/` (ELF,
+  generated C++, logs, frame dumps), `ps2_log.txt`, saves. Check `git status` before commits.
+- The user's ISO is read-only: `D:\ps2\games\Drakengard (USA).iso`.
+- Only the ELF with SHA-1 `652d95f1cc7f788e219948d52fc21ba2fffaefaa` is supported.
+- Label inferred addresses/symbols as inferred; record evidence in RESEARCH.md.
+- Native replacements of guest functions go in `src/overrides/drakengard_overrides.cpp`
+  with a reason string; they are logged at start-up.
+- GitHub: `brabro1/DrakengardPC`, private. Do not make it public.
+
+## Toolchain (MSYS2 CLANG64 on D:)
+
+Prefix every build shell with `export PATH=/d/msys64/clang64/bin:$PATH` (Git Bash).
+
+```bash
+cmake --build build/ps2recomp --target ps2_recomp ps2_analyzer ps2x_tests
+python -I tools/recomp.py "D:/ps2/games/Drakengard (USA).iso"
+cmake --build build/game --target DrakengardPC
+```
+
+Full game build ~10 min; changing `ps2_runtime.h` or anything in the generated code's PCH
+rebuilds everything — prefer new headers or `.cpp` changes in the runtime.
+
+## Run / debug
+
+```bash
+./build/game/DrakengardPC.exe --iso "D:/ps2/games/Drakengard (USA).iso" --data D:/DrakengardPC/work --max-seconds 40 > work/runN.log 2>&1
+```
+
+- `[run:tick] pc=… ra=…` lines show where the main thread is; map an address to a function
+  with `work/recomp/funcmap_named.csv` and read code in `work/recomp/disasm.txt`
+  (build it with `python -I tools/disasm_listing.py work/recomp/generated work/recomp/disasm.txt`).
+- `[irq:add]`, `[gs:irq]`, `[sceCdSearchFile:ok]` are the key boot diagnostics.
+- `PS2X_FRAME_DUMP_DIR=work/frames` saves presented frames.
+- PCSX2 2.7 at `D:\ps2\pcsx2-v2.7.346-windows-x64-Qt` is the behavioural reference.
+
+## Tests
+
+```bash
+python -I -m unittest discover -s tests -v
+cd external/PS2Recomp && ../../build/ps2recomp/ps2xTest/ps2x_tests.exe
+```
