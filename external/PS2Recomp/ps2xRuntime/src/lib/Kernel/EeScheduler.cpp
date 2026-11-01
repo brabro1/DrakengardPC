@@ -1207,6 +1207,9 @@ int EeScheduler::addIrqHandler(bool dmac,
                                   sp,
                                   true,
                                   append ? ++tail : --head});
+    RUNTIME_LOG("[irq:add] " << (dmac ? "dmac" : "intc") << " id=" << id << " cause=" << cause
+                             << " handler=0x" << std::hex << handler << " arg=0x" << argument
+                             << " known=" << std::dec << (m_runtime.hasFunction(handler) ? 1 : 0) << std::endl);
     return id;
 }
 
@@ -1258,6 +1261,13 @@ void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
     const uint32_t mask = dmac ? m_enabledDmacMask : m_enabledIntcMask;
     if (cause < 32u && (mask & (1u << cause)) == 0u)
     {
+        static uint32_t maskedLogs = 0u;
+        if (maskedLogs < 16u)
+        {
+            ++maskedLogs;
+            RUNTIME_LOG("[irq:masked] " << (dmac ? "dmac" : "intc") << " cause=" << cause << " mask=0x" << std::hex
+                                        << mask << std::dec << std::endl);
+        }
         return;
     }
     const auto &handlers = dmac ? m_dmacHandlers : m_intcHandlers;

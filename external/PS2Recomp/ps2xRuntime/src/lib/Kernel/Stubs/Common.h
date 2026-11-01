@@ -27,4 +27,5 @@
 #include <limits>
 
 #include "ps2_host_backend.h"
+#include "runtime/ps2_gs_irq.h"
 #include "Helpers/Support.h"

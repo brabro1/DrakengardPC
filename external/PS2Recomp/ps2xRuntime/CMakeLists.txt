@@ -253,7 +253,9 @@ option(PS2X_ENABLE_FFMPEG "Enable FFmpeg-backed MPEG video decoding" ${PS2X_ENAB
 if(NOT PS2X_ENABLE_FFMPEG)
     message(STATUS "FFmpeg disabled; MPEG video decode falls back to stub frames")
     add_library(ffmpeg INTERFACE)
-elseif(WIN32)
+elseif(WIN32 AND MSVC)
+    # MinGW (MSYS2 CLANG64) takes the pkg-config branch below and uses the
+    # distribution's FFmpeg; the prebuilt archive only ships MSVC import libraries.
     include(ExternalProject)
 
     set(FFMPEG_PREBUILT_TAG "n7.1-241205")

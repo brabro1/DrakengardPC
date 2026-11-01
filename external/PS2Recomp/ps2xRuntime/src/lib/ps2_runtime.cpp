@@ -3,6 +3,7 @@
 #include "ps2_stubs.h"
 #include "ps2_syscalls.h"
 #include "game_overrides.h"
+#include "runtime/ps2_gs_irq.h"
 #include "ps2_runtime_macros.h"
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/ee_scheduler.h"
@@ -475,6 +476,35 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
     outWidth = width;
     outHeight = height;
     s_hasUploadedFrame = true;
+
+    // Opt-in evidence capture for automated boot tests:
+    // PS2X_FRAME_DUMP_DIR=<dir> [PS2X_FRAME_DUMP_EVERY=N] writes every Nth presented frame as PNG.
+    static const char *s_dumpDir = std::getenv("PS2X_FRAME_DUMP_DIR");
+    if (s_dumpDir && *s_dumpDir)
+    {
+        static const uint32_t s_dumpEvery = []()
+        {
+            const char *every = std::getenv("PS2X_FRAME_DUMP_EVERY");
+            const long value = every ? std::strtol(every, nullptr, 10) : 60;
+            return static_cast<uint32_t>(value > 0 ? value : 60);
+        }();
+        static uint32_t s_presented = 0u;
+        if ((s_presented++ % s_dumpEvery) == 0u)
+        {
+            std::vector<uint8_t> opaque(reinterpret_cast<const uint8_t *>(s_uploadBuffer.data()),
+                                        reinterpret_cast<const uint8_t *>(s_uploadBuffer.data()) +
+                                            static_cast<size_t>(FB_WIDTH) * FB_HEIGHT * 4u);
+            for (size_t i = 3; i < opaque.size(); i += 4)
+            {
+                opaque[i] = 255u; // GS alpha (0x80 = 1.0) is not display alpha
+            }
+            Image image{opaque.data(), static_cast<int>(FB_WIDTH), static_cast<int>(FB_HEIGHT), 1,
+                        PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
+            const std::string path = std::string(s_dumpDir) + "/frame_" + std::to_string(s_presented - 1u) +
+                                     "_tick" + std::to_string(currentTick) + ".png";
+            ExportImage(image, path.c_str());
+        }
+    }
 }
 
 PS2Runtime::PS2Runtime()
@@ -1488,6 +1518,34 @@ void PS2Runtime::drainCompletedDmacHandlers(uint8_t *rdram)
     for (uint32_t cause : m_memory.consumeCompletedDmacCauses())
     {
         ps2_syscalls::dispatchDmacHandlersForCause(rdram, this, cause);
+    }
+    ps2PollGsInterrupt(this);
+}
+
+namespace
+{
+    // CSR event bits (SIGNAL=bit0, FINISH=bit1) that already raised INTC cause 0.
+    uint32_t g_gsIrqLatched = 0u;
+}
+
+void ps2PollGsInterrupt(PS2Runtime *runtime)
+{
+    GSRegisters &gs = runtime->memory().gs();
+    const uint32_t events = static_cast<uint32_t>(gs.csr.load()) & 0x3u;
+    // IMR bit 8 masks SIGNAL, bit 9 masks FINISH (1 = masked).
+    const uint32_t unmasked = events & ~static_cast<uint32_t>((gs.imr >> 8) & 0x3u);
+    const uint32_t rising = unmasked & ~g_gsIrqLatched;
+    g_gsIrqLatched = unmasked;
+    if (rising != 0u)
+    {
+        static uint32_t logged = 0u;
+        if (logged < 8u)
+        {
+            ++logged;
+            RUNTIME_LOG("[gs:irq] raise intc cause=0 events=0x" << std::hex << rising << " imr=0x" << gs.imr
+                                                                << std::dec << std::endl);
+        }
+        runtime->eeScheduler().dispatchIrq(false, 0u);
     }
 }
 
