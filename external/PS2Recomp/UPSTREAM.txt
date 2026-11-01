@@ -1,0 +1,9 @@
+Upstream: https://github.com/ran-j/PS2Recomp
+Base commit: e5636981a1c9de368f6b71e819c3dc188dfedbf4 (2026-10-22, "GIF: treat FLG=3 like IMAGE everywhere a GIFtag is parsed (#384)")
+License: GPL-3.0 (see LICENSE in this directory)
+
+Removed from the vendored snapshot (not needed for the Windows build):
+  android/, vita/, ps2xRuntime/vita/, ps2xStudio/
+
+All later modifications are made as ordinary commits in the DrakengardPC repository.
+To see them: git diff <first vendoring commit> -- external/PS2Recomp
