@@ -40,6 +40,13 @@ rebuilds everything — prefer new headers or `.cpp` changes in the runtime.
 - `[irq:add]`, `[gs:irq]`, `[sceCdSearchFile:ok]` are the key boot diagnostics.
 - `PS2X_FRAME_DUMP_DIR=work/frames` saves presented frames.
 - PCSX2 2.7 at `D:\ps2\pcsx2-v2.7.346-windows-x64-Qt` is the behavioural reference.
+- `[run:sample]` (every 300 host frames) gives pc/ra/VSync tick in any build.
+- `DKG_TRACE_FUNCS=0x2f11e4,... DKG_TRACE_MEM=0x5089c0,... DKG_TRACE_SKIP=N DKG_TRACE_LIMIT=N`
+  wraps recompiled functions (args, return, memory words) without regenerating code.
+- `PS2X_PAD_SCRIPT="1300:start:10,1600:cross:10,1800:left:10,1950:cross:10"` reaches
+  title → menu → New Game → Yes (title appears around VSync tick 1093; ~110 s host time).
+- Shell needs `export PATH=/d/msys64/clang64/bin:$PATH` or the exe fails with a missing
+  `avcodec-63.dll`.
 
 ## Tests
 

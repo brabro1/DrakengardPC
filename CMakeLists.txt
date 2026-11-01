@@ -59,6 +59,7 @@ add_executable(DrakengardPC
     src/disc/iso9660.cpp
     src/game_identity.cpp
     src/overrides/drakengard_overrides.cpp
+    src/debug/trace_hooks.cpp
 )
 target_include_directories(DrakengardPC PRIVATE src)
 target_link_libraries(DrakengardPC PRIVATE drakengard_generated ps2_runtime)

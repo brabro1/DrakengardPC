@@ -16,11 +16,15 @@ Tested setup: Windows 11 Pro 26300, i5-12400F, RTX 3060, Drakengard (USA) SLUS-2
 | Disc access at real ISO sectors (EE + IOP) | verified (EE search) | IOP search path implemented, not yet exercised |
 | Interrupts: DMAC, GS FINISH/SIGNAL, timers, VSync | implemented | GS interrupt added this session; timers/VSync from PS2Recomp |
 | First game screen (memory-card warning dialog) | verified | renders ~4 s after boot (run 7) |
-| Title screen | planned | blocked on input + memory card result codes |
+| Boot logos (Square Enix, Cavia, Project Dragonsphere) | verified | session 2 |
+| Title screen | verified | reached at VSync tick ~1093 (≈110 s host time) |
+| Main menu and New Game difficulty prompt | verified | via scripted input |
+| Starting a new game | planned | hangs after the fade-out (n = 0 object sort) |
 | Ground combat, dragon flight, story, endings | planned | |
 | Audio (EzSound on IOP → host audio) | planned | driver runs on IOP; no output path |
 | FMV playback (IPU MPEG-2) | planned | FFmpeg linked; untested |
-| Memory card saves + backups | planned | host folder `work/memcard/mc0` configured; game currently reports "no memory card" |
+| Memory card detection (empty card, no save yet) | verified | libmc first-probe and GetEntSpace semantics fixed |
+| Memory card saves + backups | planned | host folder `work/memcard/mc0`; no save written yet |
 
 ## Display
 
@@ -54,7 +58,9 @@ Tested setup: Windows 11 Pro 26300, i5-12400F, RTX 3060, Drakengard (USA) SLUS-2
 
 | Feature | State | Notes |
 |---|---|---|
-| Controller (DualShock 2 semantics) | planned | PS2Recomp pad HLE present, untested |
+| Controller (DualShock 2 analog + pressure modes) | verified | game locks analog mode and enables pressure mode; menus respond |
+| Keyboard fallback | implemented | fixed mapping (README); not yet rebindable |
+| Scripted input for tests | verified | `PS2X_PAD_SCRIPT` |
 | Keyboard/mouse with rebinding | planned | |
 | Dead zones, button prompts, mouse camera | planned | |
 
@@ -77,3 +83,5 @@ Tested setup: Windows 11 Pro 26300, i5-12400F, RTX 3060, Drakengard (USA) SLUS-2
 | Frame dump to PNG | verified | `PS2X_FRAME_DUMP_DIR` |
 | Bounded automated runs | verified | `--max-seconds` |
 | Pipeline invariant tests | verified | `tests/test_pipeline.py` (6 tests) |
+| Function trace hooks + memory watch | verified | `DKG_TRACE_FUNCS`, `DKG_TRACE_MEM`, `DKG_TRACE_SKIP` |
+| Position samples without call tracing | verified | `[run:sample]` every 300 host frames |

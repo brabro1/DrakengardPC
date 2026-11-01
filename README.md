@@ -9,7 +9,7 @@ Cavia.
 > Drakengard (USA). Everything derived from it (extracted ELF, generated C++, saves)
 > is created locally under `work/` and is never committed.
 
-## Status: early bring-up (milestone B reached, C in progress)
+## Status: early bring-up (title screen and menus reached; no gameplay yet)
 
 What is verified on the reference machine (see [PROGRESS.md](PROGRESS.md)):
 
@@ -18,10 +18,12 @@ What is verified on the reference machine (see [PROGRESS.md](PROGRESS.md)):
 - The native executable boots the original game code: crt0 → kernel init → the game
   loads all 8 IOP modules from the disc (run by the IOP interpreter), finds its data
   archives at their real disc sectors, registers its interrupt handlers, runs its
-  frame/task loop, and **renders its first real screen** (the boot-time memory-card
-  warning dialog) about 4 seconds after start.
-- **Not yet**: input, a working memory card, correct field/display presentation, audio,
-  movies, the title screen. There is no gameplay. See the [feature matrix](FEATURES.md).
+  frame/task loop, shows the Square Enix, Cavia and Project Dragonsphere logos, and reaches
+  the **title screen**. Controller input works (the game switches the virtual DualShock 2
+  to analog + pressure mode): Start opens the main menu, New Game opens the difficulty prompt.
+- **Not yet**: starting a new game (hangs after the fade-out), full speed (currently ~38%),
+  correct interlaced presentation, audio, movies, saves. There is no gameplay. See the
+  [feature matrix](FEATURES.md) and [PROGRESS.md](PROGRESS.md) for the current blocker.
 
 ## Requirements
 
@@ -69,8 +71,14 @@ FFmpeg DLLs come from MSYS2, so put `D:\msys64\clang64\bin` on `PATH` (packaging
 build/game/DrakengardPC.exe --iso "D:/ps2/games/Drakengard (USA).iso" --data work
 ```
 
+Controls (keyboard): arrows/WASD = d-pad, X or Space = ✕, C = ○, Z = □, V = △, Enter = Start,
+Tab = Select, Q/E = L1/R1, Shift = L2/R2. A connected gamepad is used instead when present.
+
 Options: `--max-seconds N` exits after N seconds (automated boot tests). Environment:
-`PS2X_FRAME_DUMP_DIR=<dir>` (and `PS2X_FRAME_DUMP_EVERY=N`) saves presented frames as PNG.
+`PS2X_FRAME_DUMP_DIR=<dir>` (and `PS2X_FRAME_DUMP_EVERY=N`) saves presented frames as PNG;
+`PS2X_PAD_SCRIPT="1300:start:10,1600:cross:10"` presses buttons at given VSync ticks;
+`DKG_TRACE_FUNCS=0xADDR,...` (with `DKG_TRACE_MEM`, `DKG_TRACE_SKIP`, `DKG_TRACE_LIMIT`)
+logs calls to recompiled functions.
 Configure with `-DDRAKENGARD_TRACE_CALLS=ON` to log every guest call (slow, huge output).
 
 The launcher verifies the disc's boot ELF (SHA-1 `652d95f1…`) and refuses any other release.

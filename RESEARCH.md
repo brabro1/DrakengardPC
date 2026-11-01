@@ -137,3 +137,26 @@ failures, 0 unhandled instructions).
   recompiled.
 - **PCSX2** (<https://github.com/PCSX2/pcsx2>): used here only as a behavioural reference and as
   a source of game-specific facts (GameIndex, patches). Not part of the execution path.
+
+## Game behaviour established in session 2 (Observed, via trace hooks)
+
+Addresses are for SLUS-20732 v1.00 only. Names in quotes are descriptive, not original symbols.
+
+| Address | What it is | Evidence |
+|---|---|---|
+| `0x2EF5AC` / `0x2EF8A0` / `0x2EF3DC` | memory-card request dispatcher / poller / issue-and-wait wrapper; −10000 = pending, −4000 = sync command mismatch | disassembly; traced returns |
+| `0x2EF7B4` | wires GetInfo outputs: type → `obj+0x24`, free → `+0x1C`, format → `+0x20` | disassembly |
+| `0x2F11E4` | "card check" state machine on object `0x508300`; state `+0x6C0` (0 start, 2 formatted PS2 card, 3 entry space read, 4 OK/no save, 7 unformatted, 8 no card); reads GetInfo 3× and requires agreement | memory watch of `0x5089C0..` |
+| — | game expects `GetEntSpace("/BASLUS-20732")` = −4 when no save folder exists; free-space need computed as `free − 2 − Σ⌈size/1 KB⌉ − ⌈(files+1)/2⌉` clusters | disassembly at `0x2F1458..0x2F1508` |
+| `0x1269B8` | loops on `sceSifAllocIopHeap(0x40000)` with "Cannot allocate %d bytes of IOP memory" | disassembly, string at `0x555BB0` |
+| `0x286214` | IOP buffer allocations seen: 0x10000, 0x20000, 0x20000, 0x40000, 0x40000 | trace of `sceSifAllocIopHeap` |
+| `0x122AE4` | opens pad ports 0/1 with DMA buffers `0x56CD80` / `0x56CEC0` | trace of `scePadPortOpen` |
+| `0x122F40` | per-port pad update (object via `gp−0x3E2C`): state `+0x108`, ID `+0x132`, input-mask countdown `+0x114` | disassembly; memory watch |
+| `0x122E2C` / `0x122F0C` | `scePadSetMainMode(port, 0, 1, 3)` (analog, locked) / `scePadEnterPressMode` | traces |
+| `0x128704` | controller manager: port-0 data accepted only with ID `0x79` (pressure mode); otherwise replaced by neutral data and flag `+0x94` = 1; pad buffers `0x342860` / `0x342900` | disassembly; memory watch |
+| `0x122A58..0x122AE0` | confirm/cancel decode: ✕ or Start → 0x20, ○ → 0x10 | disassembly |
+| `0x137478` | comb sort of 8-byte `(ptr, float key)` records; bound `n − gap` is unsigned, so n = 0 never terminates | disassembly; trace (n = 0 after New Game) |
+| `0x137B5C` / `0x138038` | collect scene objects whose `+0xE0` matches a category and sort by float at `+0xE4` | disassembly |
+
+Boot sequence (observed VSync ticks at ~38% speed): fade-in 185 → Square Enix logo ~305 →
+Cavia ~605 → Project Dragonsphere ~845 → title ~1093.

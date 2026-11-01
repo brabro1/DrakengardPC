@@ -11,6 +11,11 @@
 #include <cstdint>
 #include <iostream>
 
+namespace dkg::debug
+{
+    void installTraceHooks(PS2Runtime &runtime);
+}
+
 namespace
 {
     struct Binding
@@ -37,6 +42,9 @@ namespace
                       << std::hex << b.address << std::dec << " -> native " << b.handler << " (" << b.reason << ")"
                       << std::endl;
         }
+        // Debug-only wrappers (DKG_TRACE_FUNCS); installed last so they wrap the
+        // bindings above as well.
+        dkg::debug::installTraceHooks(runtime);
     }
 }
 

@@ -21,9 +21,12 @@ Addresses, function maps and overrides are specific to the supported ELF.
 | 2026-11-02 | First visible screen | fail — only boot clear presented | run 5 |
 | 2026-11-02 | Boot to memory-card warning dialog | pass — dialog renders at tick 245; presentation shows both field buffers | run 7, after function-map fix |
 | 2026-11-02 | Answer dialog / reach title | not possible yet — no input | run 7 |
+| 2026-11-02 | Boot to title screen | pass — logos then title at tick ~1093; ~38% speed | session 2, run 18 |
+| 2026-11-02 | Title → main menu → New Game prompt (scripted Start, ✕) | pass | session 2, run 29 |
+| 2026-11-02 | Start a new game (Yes) | fail — black screen, hang in object sort with n = 0 | session 2, run 30 |
 
 ## Host
 
 | Machine | OS | CPU | GPU | Result |
 |---|---|---|---|---|
-| reference | Windows 11 Pro 26300 | i5-12400F | RTX 3060 (32.0.16.2101) | builds; boots to the memory-card warning dialog |
+| reference | Windows 11 Pro 26300 | i5-12400F | RTX 3060 (32.0.16.2101) | builds; boots to the title screen and menus |

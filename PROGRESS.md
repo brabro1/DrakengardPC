@@ -6,8 +6,8 @@
 |---|---|---|
 | A — Inspection and feasibility | **done** | RESEARCH.md: build identity, disc inventory, ELF layout, ISA census, tool audit, architecture choice |
 | B — Native execution foundation | **done** | 8,315 functions translated (0 decode failures); `DrakengardPC.exe` executes original game code through IOP init, disc search and interrupt setup into the frame loop (logs below) |
-| C — Boot and title screen | in progress | the game's own memory-card warning dialog renders (first real screen, ~4 s after boot); no input yet, so title not reached |
-| D — Playable vertical slice | not started | |
+| C — Boot and title screen | **reached, with known issues** | Square Enix → Cavia → Project Dragonsphere logos → title "PRESS START BUTTON"; scripted input opens the main menu and the New Game difficulty prompt (session 2). Known issues: game runs at ~38% speed, window shows both interlaced field buffers, no audio |
+| D — Playable vertical slice | blocked | New Game hangs after the fade-out (see Main blockers) |
 | E — Compatibility and timing | not started | timing architecture sketched in ARCHITECTURE.md |
 | F — Modern rendering and mods | not started | |
 | G — Complete-game verification | not started | |
@@ -73,22 +73,66 @@
    and UI art. The game polls the card (`[MC] GetDir port=0 '/BASLUS-20732/*'`, repeated
    `GetInfo`) and waits for input.
 
+### 2026-11-02 — session 2 (input, memory card, title screen)
+
+All findings came from new tooling: `DKG_TRACE_FUNCS` / `DKG_TRACE_MEM` / `DKG_TRACE_SKIP`
+function trace hooks (wrap any recompiled function, log arguments, return value and guest
+memory words; no code regeneration needed), `PS2X_PAD_SCRIPT` scripted input, and an
+always-on `[run:sample]` position sample every 300 host frames.
+
+1. **Memory card** (game said "There is no memory card"). Traced the game's card state
+   machine (`0x2F11E4`, object `0x508300`, state at `+0x6C0`): states went 0→1→2 (PS2 card,
+   formatted, 8,192 free)→3, then **8 = no card**. Cause: the game asks GetEntSpace for its
+   save folder `/BASLUS-20732` and expects **−4 when the folder does not exist**; the runtime
+   always answered 1024, so the game believed a folder existed, then GetDir failed and the
+   mismatch became "no card". Fixed GetEntSpace per ps2sdk `mcman_getentspace` (−4 for a
+   missing directory, else free entry slots). Also made the first GetInfo after init report
+   −1 ("formatted card inserted since last call", libmc.h), unformatted cards −2.
+   Result: logos → title instead of the warning.
+2. **Speed**: `[run:sample]` shows the guest VSync clock advancing ~23/s instead of 59.94
+   (≈38% speed); boot to the title takes ~110 s of host time. Not yet investigated.
+3. **IOP heap**: after the third logo the game looped on `sceSifAllocIopHeap(0x40000)`
+   failing ("Cannot allocate %d bytes of IOP memory" string at `0x555BB0`). The game needs
+   64 K + 128 K + 128 K + 256 K + 256 K; the IOP heap was capped at 832 KB
+   (`0x120000–0x1F0000`) and never reused freed blocks (searched only above a high-water
+   cursor). Fixed: first-fit allocation, largest-hole `QueryMaxFreeMemSize`, heap base
+   `0x90000` (modules here end near `0x5C000`), failure logging. → **title screen** at tick
+   ~1093: "Drakengard — PRESS START BUTTON — ©2003, 2004 cavia Inc./SQUARE ENIX".
+4. **Input** (Start ignored at the title). The game reads pads every frame into
+   `0x342860`/`0x342900`, but its controller manager (`0x128704`) **only accepts port-0 data
+   whose controller ID is `0x79`** (DUALSHOCK 2 pressure-sensitive mode) and otherwise
+   substitutes neutral data. Two runtime gaps prevented that: the pad mode table listed only
+   digital mode (so the game never called `scePadSetMainMode` to switch to analog), and
+   pressure mode never reported ID `0x79`. Fixed both (table = {4 digital, 7 analog}; ID 0x79
+   when pressure mode is on). The game now locks analog mode, enters pressure mode, and
+   scripted presses work: Start → main menu (NEW GAME / LOAD GAME / OPTIONS); ✕ → difficulty
+   prompt ("…set to NORMAL… Begin game with the current setting? Yes/No").
+5. **New Game**: ← then ✕ selects Yes; the screen fades to black and the game hangs in a
+   comb sort (`0x137478`) called from `0x137B5C` with **n = 0**: its unsigned bound `n − gap`
+   wraps to 0xFFFFFFFF. The same code would hang on hardware, so the list it sorts (scene
+   objects whose `+0xE0` matches a category, built in `0x138038`) must not be empty there:
+   something the first stage should have created or loaded is missing.
+
+Tests: PS2Recomp `ps2x_tests` 446/446 after updating four upstream tests to the libmc /
+DUALSHOCK 2 semantics above (first GetInfo −1; fixed mode table; IOP heap base). Pipeline
+tests 6/6.
+
 ## Main blockers
 
-1. **Input**: no host input reaches the game yet, so the dialog cannot be answered.
-2. **Memory card result codes**: the runtime's MC layer answers `GetInfo type=2 free=8192
-   format=1 result=0`, yet the game reports no card. The libmc 2810 result semantics the game
-   expects need checking.
-3. **Presentation**: the window shows the raw 640×512 frame-buffer region (both field buffers)
-   instead of the `DISPLAY1` rectangle; interlaced field rendering (640×224 fields) is not
-   yet handled.
+1. **New Game hangs** after the fade-out (n = 0 sort above). Next: find what populates the
+   object list built at `0x138038` (callers `0x13560C`, `0x135428`, `0x137214`) and which
+   load or creation step fails before it; compare with PCSX2 at the same point.
+2. **Speed ~38%**: the guest VSync clock runs slow; boot-to-title ≈110 s host time.
+3. **Presentation**: the window shows the raw 640×512 region (both interlaced field buffers)
+   instead of the `DISPLAY1` rectangle.
+4. **Audio**: the EzSound driver runs on the IOP but nothing reaches the host.
 
 ## Next actions
 
-1. Wire keyboard/controller input to the pad HLE (`scePadRead` stub) and confirm the dialog
-   reacts (Yes/No, ✕).
-2. Trace the game's memory-card check (`sceMcGetInfo` call sites and how the result/type
-   values are interpreted) against libmc semantics; aim for "card present, no save" → title.
-3. Fix presentation to crop `DISPLAY1` and merge interlaced fields (compare with PCSX2).
-4. Measure timing: presented frames per second vs. 59.94 Hz; then audio (EzSound) and the
-   MPEG intro (`MOVIE0UC.BIN` at LSN `0xBE7`).
+1. Trace the stage-start path (`0x138038` and its object-list builders) with the trace hooks;
+   check for failed file reads or allocations just before the hang.
+2. Profile where host time goes (VU1 interpreter, software GS, IOP interpreter) and why the
+   VSync clock lags; target real-time 59.94 Hz before timing work.
+3. Crop/merge the interlaced display for presentation.
+4. Add an automated boot test script that runs the scripted path to the title and checks
+   frame-dump hashes.
