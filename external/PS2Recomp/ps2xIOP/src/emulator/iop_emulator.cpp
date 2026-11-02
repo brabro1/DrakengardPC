@@ -566,15 +566,18 @@ namespace ps2x::iop::detail
                     IopThread *next = kernel.beginNextReady(totalCycles);
                     if (!next)
                     {
-                        uint64_t nextWake = kernel.nextWakeCycle(target);
+                        uint64_t nextWake = kernel.nextWakeCycle(~0ull);
                         for (const auto &[irq, completionCycle] : pendingDmaInterrupts)
                             nextWake = std::min(nextWake, completionCycle);
                         if (!pendingGuestCallbacks.empty())
                             nextWake = std::min(nextWake, pendingGuestCallbacks.begin()->first);
                         nextWake = timrman.nextEventCycle(nextWake);
+                        idleUntil = nextWake;
+                        idleGeneration = inputGeneration;
                         totalCycles = std::max(totalCycles + 1u, std::min(target, nextWake));
                         continue;
                     }
+                    idleUntil = 0;
                     const uint64_t before = totalCycles;
                     runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
                     kernel.endTimeslice(*next, kThreadReturnSentinel);
@@ -700,6 +703,12 @@ namespace ps2x::iop::detail
         uint32_t nextModuleId = 1;
         uint32_t moduleCursor = kModuleLoadBase;
         uint64_t totalCycles = 0;
+        // Idle fast path: while no IOP thread is ready, the next cycle at which
+        // anything can happen is cached and runEeCycles() just advances the clock.
+        // Every external input bumps inputGeneration, which invalidates the cache.
+        uint64_t idleUntil = 0;
+        uint64_t idleGeneration = 0;
+        uint64_t inputGeneration = 1;
         uint64_t totalInstructions = 0;
         uint64_t eeCycleCarry = 0;
         CpuState *activeCpu = nullptr;
@@ -721,21 +730,25 @@ namespace ps2x::iop::detail
 
     void IopEmulator::reset()
     {
+        ++m_impl->inputGeneration;
         m_impl->reset();
     }
 
     ModuleLoadResult IopEmulator::loadModule(std::string_view path, const void *arguments, uint32_t argumentSize)
     {
+        ++m_impl->inputGeneration;
         return m_impl->loadModule(path, arguments, argumentSize);
     }
 
     ModuleLoadResult IopEmulator::loadModuleBuffer(uint32_t guestAddress, const void *arguments, uint32_t argumentSize)
     {
+        ++m_impl->inputGeneration;
         return m_impl->loadModuleBuffer(guestAddress, arguments, argumentSize);
     }
 
     bool IopEmulator::stopModule(int32_t moduleId, int32_t *result)
     {
+        ++m_impl->inputGeneration;
         return m_impl->stopModule(moduleId, result);
     }
 
@@ -744,12 +757,21 @@ namespace ps2x::iop::detail
         const uint64_t total = m_impl->eeCycleCarry + eeCycles;
         const uint64_t iopCycles = total / 8u;
         m_impl->eeCycleCarry = total % 8u;
-        if (iopCycles)
-            m_impl->runCycles(iopCycles);
+        if (!iopCycles)
+            return;
+        Impl &impl = *m_impl;
+        if (impl.idleUntil != 0u && impl.idleGeneration == impl.inputGeneration &&
+            impl.totalCycles + iopCycles < impl.idleUntil)
+        {
+            impl.totalCycles += iopCycles;
+            return;
+        }
+        impl.runCycles(iopCycles);
     }
 
     RpcResult IopEmulator::handleRpc(const RpcRequest &request)
     {
+        ++m_impl->inputGeneration;
         return m_impl->rpc.handleRpc(request, *m_impl);
     }
 
@@ -760,16 +782,19 @@ namespace ps2x::iop::detail
 
     void IopEmulator::onSifTransfer(const SifTransfer &transfer)
     {
+        ++m_impl->inputGeneration;
         m_impl->rpc.onSifTransfer(transfer);
     }
 
     uint32_t IopEmulator::allocateMemory(uint32_t size, uint32_t alignment)
     {
+        ++m_impl->inputGeneration;
         return m_impl->memory.allocate(size, alignment);
     }
 
     bool IopEmulator::freeMemory(uint32_t address)
     {
+        ++m_impl->inputGeneration;
         return m_impl->memory.freeAllocation(address);
     }
 
@@ -781,12 +806,14 @@ namespace ps2x::iop::detail
 
     bool IopEmulator::writeMemory(uint32_t address, const void *source, size_t size)
     {
+        ++m_impl->inputGeneration;
         return isMemoryRange(address, size) &&
                m_impl->memory.writeRam(address, source, size);
     }
 
     bool IopEmulator::zeroMemory(uint32_t address, size_t size)
     {
+        ++m_impl->inputGeneration;
         return isMemoryRange(address, size) &&
                m_impl->memory.zeroRam(address, size);
     }

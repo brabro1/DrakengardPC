@@ -853,24 +853,57 @@ inline __m128i ps2_u64_to_epi64_pair(uint64_t value)
 #define FPU_FLOOR_W_S(a) ((int32_t)floorf((float)(a)))
 #define FPU_CVT_S_W(a) ((float)(int32_t)(a))
 #define FPU_CVT_S_L(a) ((float)(int64_t)(a))
-#define FPU_CVT_W_S(a) ((int32_t)nearbyintf((float)(a)))
+// R5900 CVT.W.S ignores the rounding mode and truncates toward zero; values with
+// magnitude >= 2^31 (including exponent-255 encodings) saturate by sign, as PCSX2
+// implements. Rounding to nearest made Drakengard's comb sort (gap = cvt(gap/1.3))
+// stick at gap 2 and never finish on the first loading screen.
+inline int32_t ps2_cvt_w_s(float a)
+{
+    const uint32_t bits = std::bit_cast<uint32_t>(a);
+    if ((bits & 0x7F800000u) <= 0x4E800000u)
+        return static_cast<int32_t>(a);
+    return (bits & 0x80000000u) ? INT32_MIN : INT32_MAX;
+}
+#define FPU_CVT_W_S(a) (ps2_cvt_w_s((float)(a)))
 #define FPU_CVT_L_S(a) ((int64_t)(float)(a))
+// EE FPU compares. The R5900 FPU has no NaN or infinity: exponent-255 values are
+// ordinary numbers above 2^128 and denormals read as zero, so no comparison is
+// ever unordered. Games rely on this, e.g. Drakengard seeds a nearest-object
+// search with 0x7FFFFFFF as its largest distance (an IEEE NaN, which made every
+// c.lt.s against it false and left the new-game scene list empty). Operands
+// without special encodings compare as host floats, so the common case is free.
+inline int ps2_fcmp(float a, float b)
+{
+    double x, y;
+    if (!ps2_fspecial(a) && !ps2_fspecial(b))
+    {
+        x = a;
+        y = b;
+    }
+    else
+    {
+        x = ps2_to_double(a);
+        y = ps2_to_double(b);
+    }
+    return (x < y) ? -1 : (x > y ? 1 : 0);
+}
+
 #define FPU_C_F_S(a, b) (0)
-#define FPU_C_UN_S(a, b) (isnan((float)(a)) || isnan((float)(b)))
-#define FPU_C_EQ_S(a, b) ((float)(a) == (float)(b))
-#define FPU_C_UEQ_S(a, b) ((float)(a) == (float)(b) || isnan((float)(a)) || isnan((float)(b)))
-#define FPU_C_OLT_S(a, b) ((float)(a) < (float)(b))
-#define FPU_C_ULT_S(a, b) ((float)(a) < (float)(b) || isnan((float)(a)) || isnan((float)(b)))
-#define FPU_C_OLE_S(a, b) ((float)(a) <= (float)(b))
-#define FPU_C_ULE_S(a, b) ((float)(a) <= (float)(b) || isnan((float)(a)) || isnan((float)(b)))
+#define FPU_C_UN_S(a, b) (0)
+#define FPU_C_EQ_S(a, b) (ps2_fcmp((float)(a), (float)(b)) == 0)
+#define FPU_C_UEQ_S(a, b) FPU_C_EQ_S(a, b)
+#define FPU_C_OLT_S(a, b) (ps2_fcmp((float)(a), (float)(b)) < 0)
+#define FPU_C_ULT_S(a, b) FPU_C_OLT_S(a, b)
+#define FPU_C_OLE_S(a, b) (ps2_fcmp((float)(a), (float)(b)) <= 0)
+#define FPU_C_ULE_S(a, b) FPU_C_OLE_S(a, b)
 #define FPU_C_SF_S(a, b) (0)
-#define FPU_C_NGLE_S(a, b) (isnan((float)(a)) || isnan((float)(b)))
-#define FPU_C_SEQ_S(a, b) ((float)(a) == (float)(b))
-#define FPU_C_NGL_S(a, b) ((float)(a) == (float)(b) || isnan((float)(a)) || isnan((float)(b)))
-#define FPU_C_LT_S(a, b) ((float)(a) < (float)(b))
-#define FPU_C_NGE_S(a, b) ((float)(a) < (float)(b) || isnan((float)(a)) || isnan((float)(b)))
-#define FPU_C_LE_S(a, b) ((float)(a) <= (float)(b))
-#define FPU_C_NGT_S(a, b) ((float)(a) <= (float)(b) || isnan((float)(a)) || isnan((float)(b)))
+#define FPU_C_NGLE_S(a, b) (0)
+#define FPU_C_SEQ_S(a, b) FPU_C_EQ_S(a, b)
+#define FPU_C_NGL_S(a, b) FPU_C_EQ_S(a, b)
+#define FPU_C_LT_S(a, b) FPU_C_OLT_S(a, b)
+#define FPU_C_NGE_S(a, b) FPU_C_OLT_S(a, b)
+#define FPU_C_LE_S(a, b) FPU_C_OLE_S(a, b)
+#define FPU_C_NGT_S(a, b) FPU_C_OLE_S(a, b)
 
 // QFSRV: Quadword Funnel Shift Right Variable
 // Concatenates rs || rt (256 bits) and right-shifts by SA bits, taking lower 128 bits.

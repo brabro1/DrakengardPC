@@ -210,6 +210,41 @@ void register_ps2_float_semantics_tests()
             t.Equals(laneBits(flushed, 3), bitsOf(0.5f), "lane 3: 1 * 0.5 should be 0.5");
         });
 
+        tc.Run("C.cond.S compares exponent-255 values as large numbers, never unordered", [](TestCase &t)
+        {
+            const auto bits = [](uint32_t b) { return std::bit_cast<float>(b); };
+            const float max = bits(0x7FFFFFFFu);    // PS2 largest value; IEEE NaN
+            const float negMax = bits(0xFFFFFFFFu);
+            const float big = bits(0x7F800000u);     // 2^128 on the PS2; IEEE +Inf
+            const float denormal = bits(0x00000001u);
+
+            t.IsTrue(FPU_C_OLT_S(0.0f, max), "0 < 0x7FFFFFFF (Drakengard's nearest-object search seed)");
+            t.IsTrue(FPU_C_LT_S(1.0e38f, max), "FLT_MAX-range value < 0x7FFFFFFF");
+            t.IsTrue(FPU_C_OLT_S(big, max), "2^128 < 0x7FFFFFFF");
+            t.IsTrue(FPU_C_OLT_S(negMax, -1.0f), "-0x7FFFFFFF < -1");
+            t.IsTrue(FPU_C_EQ_S(max, max), "0x7FFFFFFF == itself");
+            t.IsTrue(FPU_C_OLE_S(max, max), "0x7FFFFFFF <= itself");
+            t.IsFalse(FPU_C_OLT_S(max, 0.0f), "0x7FFFFFFF is not < 0");
+            t.IsTrue(FPU_C_EQ_S(denormal, 0.0f), "denormals read as zero");
+            t.IsTrue(FPU_C_EQ_S(-0.0f, 0.0f), "-0 == +0");
+            t.IsFalse(FPU_C_UN_S(max, 1.0f), "no PS2 value is unordered");
+            t.IsTrue(FPU_C_OLT_S(1.0f, 2.0f), "ordinary compare");
+        });
+
+        tc.Run("CVT.W.S truncates toward zero and saturates", [](TestCase &t)
+        {
+            const auto bits = [](uint32_t b) { return std::bit_cast<float>(b); };
+            t.Equals(FPU_CVT_W_S(1.538f), 1, "1.538 -> 1 (not 2)");
+            t.Equals(FPU_CVT_W_S(-1.7f), -1, "-1.7 -> -1");
+            t.Equals(FPU_CVT_W_S(0.5f), 0, "0.5 -> 0");
+            t.Equals(FPU_CVT_W_S(2147483520.0f), 2147483520, "largest float below 2^31 converts exactly");
+            t.Equals(FPU_CVT_W_S(2147483648.0f), INT32_MAX, "2^31 saturates");
+            t.Equals(FPU_CVT_W_S(-3.0e9f), INT32_MIN, "large negative saturates");
+            t.Equals(FPU_CVT_W_S(bits(0x7FFFFFFFu)), INT32_MAX, "exponent-255 positive saturates");
+            t.Equals(FPU_CVT_W_S(bits(0xFFFFFFFFu)), INT32_MIN, "exponent-255 negative saturates");
+            t.Equals(FPU_CVT_W_S(bits(0x00000001u)), 0, "denormal -> 0");
+        });
+
         tc.Run("DIV.S and RSQRT.S translate to the PS2 semantics helpers", [](TestCase &t)
         {
             CodeGenerator gen({}, {});

@@ -4,6 +4,12 @@
 #include "ps2_syscalls.h"
 #include "game_overrides.h"
 #include "runtime/ps2_gs_irq.h"
+
+#if defined(_MSC_VER)
+#include <intrin.h>
+#else
+#include <x86intrin.h>
+#endif
 #include "ps2_runtime_macros.h"
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/ee_scheduler.h"
@@ -635,8 +641,26 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
     m_iopSubsystem->onSifTransfer(transfer);
 }
 
+namespace
+{
+    // Coarse host-time profile of the subsystems that run on the guest thread,
+    // reported as shares of wall time by [run:sample].
+    std::atomic<uint64_t> g_profIopTsc{0};
+    std::atomic<uint64_t> g_profVu1Tsc{0};
+    std::atomic<uint64_t> g_profGifTsc{0};
+
+    struct ProfileScope
+    {
+        explicit ProfileScope(std::atomic<uint64_t> &target) : acc(target), start(__rdtsc()) {}
+        ~ProfileScope() { acc.fetch_add(__rdtsc() - start, std::memory_order_relaxed); }
+        std::atomic<uint64_t> &acc;
+        uint64_t start;
+    };
+}
+
 void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
 {
+    ProfileScope profile(g_profIopTsc);
     m_iopSubsystem->runEeCycles(eeCycles);
 }
 
@@ -696,7 +720,7 @@ bool PS2Runtime::syncCoreSubsystems()
 
     m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
     m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
-                                    { m_gs.processGIFPacket(data, size); });
+                                    { ProfileScope profile(g_profGifTsc); m_gs.processGIFPacket(data, size); });
     m_memory.setGifArbiter(&m_gifArbiter);
     m_memory.setVu1MscalCallback([this](uint32_t startPC, uint32_t top, uint32_t itop)
                                  {
@@ -709,6 +733,7 @@ bool PS2Runtime::syncCoreSubsystems()
                                          (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
                                      m_vu1.state().tBitEnabled =
                                          (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
+                                     ProfileScope profile(g_profVu1Tsc);
                                      m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                    m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
                                                    m_gs, &m_memory, startPC, top, itop, 65536);
@@ -727,6 +752,7 @@ bool PS2Runtime::syncCoreSubsystems()
                                          (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
                                      m_vu1.state().tBitEnabled =
                                          (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
+                                     ProfileScope profile(g_profVu1Tsc);
                                      m_vu1.resume(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                   m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
                                                   m_gs, &m_memory, top, itop, 65536);
@@ -2451,10 +2477,35 @@ void PS2Runtime::run()
         // in builds without aggressive logging.
         if ((++sampleTick % 300u) == 0u)
         {
-            RUNTIME_LOG("[run:sample] frame=" << sampleTick << " vsync=" << m_eeScheduler->currentVSyncTick()
+            static uint64_t lastTsc = __rdtsc();
+            static uint64_t lastIop = 0, lastVu1 = 0, lastGif = 0;
+            static const auto startTime = std::chrono::steady_clock::now();
+            static auto lastTime = startTime;
+            static uint64_t lastVsync = 0;
+            const auto nowTime = std::chrono::steady_clock::now();
+            const uint64_t vsyncNow = m_eeScheduler->currentVSyncTick();
+            const double sampleSeconds = std::chrono::duration<double>(nowTime - lastTime).count();
+            const double elapsedSeconds = std::chrono::duration<double>(nowTime - startTime).count();
+            const uint64_t nowTsc = __rdtsc();
+            const uint64_t iop = g_profIopTsc.load(std::memory_order_relaxed);
+            const uint64_t vu1 = g_profVu1Tsc.load(std::memory_order_relaxed);
+            const uint64_t gif = g_profGifTsc.load(std::memory_order_relaxed);
+            const double span = static_cast<double>(std::max<uint64_t>(1u, nowTsc - lastTsc)) / 100.0;
+            RUNTIME_LOG("[run:sample] t=" << static_cast<int>(elapsedSeconds) << "s vsync=" << vsyncNow << " ("
+                                              << static_cast<int>((vsyncNow - lastVsync) / std::max(0.001, sampleSeconds))
+                                              << "/s) frame=" << sampleTick
                                               << " pc=0x" << std::hex << m_debugPc.load(std::memory_order_relaxed)
                                               << " ra=0x" << m_debugRa.load(std::memory_order_relaxed) << std::dec
-                                              << " dma=" << m_memory.dmaStartCount() << std::endl);
+                                              << " dma=" << m_memory.dmaStartCount()
+                                              << " wall%: iop=" << static_cast<int>((iop - lastIop) / span)
+                                              << " vu1=" << static_cast<int>((vu1 - lastVu1) / span)
+                                              << " gif=" << static_cast<int>((gif - lastGif) / span) << std::endl);
+            lastTsc = nowTsc;
+            lastTime = nowTime;
+            lastVsync = vsyncNow;
+            lastIop = iop;
+            lastVu1 = vu1;
+            lastGif = gif;
         }
         PS2_IF_AGRESSIVE_LOGS({
             tick++;

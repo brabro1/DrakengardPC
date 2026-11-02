@@ -292,11 +292,25 @@ namespace
         return psm == GS_PSM_T8 || psm == GS_PSM_T8H;
     }
 
+    // std::lround semantics (half away from zero) without the out-of-line CRT call,
+    // which cost ~9% of the guest thread in bilinear sampling. x - trunc(x) is exact
+    // in float for every finite x, so the result is identical to lroundf.
+    inline int roundHalfAwayFromZero(float x)
+    {
+        const float whole = std::trunc(x);
+        const float fraction = x - whole;
+        if (fraction >= 0.5f)
+            return static_cast<int>(whole) + 1;
+        if (fraction <= -0.5f)
+            return static_cast<int>(whole) - 1;
+        return static_cast<int>(whole);
+    }
+
     uint8_t lerpChannel(uint8_t c00, uint8_t c10, uint8_t c01, uint8_t c11, float fx, float fy)
     {
         const float top = static_cast<float>(c00) + (static_cast<float>(c10) - static_cast<float>(c00)) * fx;
         const float bottom = static_cast<float>(c01) + (static_cast<float>(c11) - static_cast<float>(c01)) * fx;
-        return clampU8(static_cast<int>(std::lround(top + (bottom - top) * fy)));
+        return clampU8(roundHalfAwayFromZero(top + (bottom - top) * fy));
     }
 }
 
