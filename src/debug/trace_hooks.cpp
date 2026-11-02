@@ -3,6 +3,8 @@
 //   DKG_TRACE_FUNCS=0x2ee7d0,0x2ef3dc   addresses of recompiled functions to wrap
 //   DKG_TRACE_LIMIT=64                  log lines per function (default 64)
 //   DKG_TRACE_SKIP=0                    calls to skip per function before logging
+//   DKG_TRACE_MEM=0x5089c0,0x11fe30>0x80  guest words to print with each entry;
+//                                       A>O reads the word at ([A] + O)
 //
 // Each wrapped function logs its argument registers and caller on entry and, when
 // it returns to its caller, $v0. Every guest call goes through the runtime's
@@ -37,19 +39,35 @@ namespace dkg::debug
         std::array<Hook, kMaxHooks> g_hooks{};
         uint32_t g_limit = 64;
         uint64_t g_skip = 0;
-        std::vector<uint32_t> g_watch; // DKG_TRACE_MEM: guest words printed with each entry
+        struct Watch
+        {
+            uint32_t address = 0;
+            bool indirect = false;
+            uint32_t offset = 0;
+        };
+        std::vector<Watch> g_watch; // DKG_TRACE_MEM: guest words printed with each entry
+
+        uint32_t readGuestWord(const uint8_t *rdram, uint32_t address)
+        {
+            uint32_t value = 0;
+            std::memcpy(&value, rdram + (address & 0x01FFFFFCu), sizeof(value));
+            return value;
+        }
 
         void printWatch(const uint8_t *rdram)
         {
             if (g_watch.empty())
                 return;
             std::cout << "        mem";
-            for (uint32_t address : g_watch)
+            for (const Watch &watch : g_watch)
             {
-                uint32_t value = 0;
-                std::memcpy(&value, rdram + (address & 0x01FFFFFCu), sizeof(value));
+                const uint32_t address =
+                    watch.indirect ? readGuestWord(rdram, watch.address) + watch.offset : watch.address;
+                const uint32_t value = readGuestWord(rdram, address);
+                float asFloat;
+                std::memcpy(&asFloat, &value, sizeof(asFloat));
                 std::cout << std::hex << " [0x" << address << "]=0x" << value << std::dec << "("
-                          << static_cast<int32_t>(value) << ")";
+                          << static_cast<int32_t>(value) << "|" << asFloat << "f)";
             }
             std::cout << std::endl;
         }
@@ -100,7 +118,17 @@ namespace dkg::debug
             std::stringstream words(mem);
             std::string word;
             while (std::getline(words, word, ','))
-                g_watch.push_back(static_cast<uint32_t>(std::strtoul(word.c_str(), nullptr, 16)));
+            {
+                Watch watch;
+                const size_t arrow = word.find('>');
+                watch.address = static_cast<uint32_t>(std::strtoul(word.substr(0, arrow).c_str(), nullptr, 16));
+                if (arrow != std::string::npos)
+                {
+                    watch.indirect = true;
+                    watch.offset = static_cast<uint32_t>(std::strtoul(word.substr(arrow + 1).c_str(), nullptr, 16));
+                }
+                g_watch.push_back(watch);
+            }
         }
 
         std::stringstream items(list);

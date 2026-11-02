@@ -45,6 +45,10 @@ rebuilds everything — prefer new headers or `.cpp` changes in the runtime.
   wraps recompiled functions (args, return, memory words) without regenerating code.
 - `PS2X_PAD_SCRIPT="1300:start:10,1600:cross:10,1800:left:10,1950:cross:10"` reaches
   title → menu → New Game → Yes (title appears around VSync tick 1093; ~110 s host time).
+- Profiling: `DKG_PROFILE=work/profile.txt` samples every thread (1 ms) and writes on exit;
+  `python -I tools/profile_report.py work/profile.txt build/game/DrakengardPC.exe` ranks the
+  busy thread's functions. `[run:sample]` also prints VSync/s and wall-time shares of the IOP,
+  VU1 and GIF/GS paths. `DKG_TRACE_MEM` accepts `A>O` (word at [A]+O) and prints floats.
 - Shell needs `export PATH=/d/msys64/clang64/bin:$PATH` or the exe fails with a missing
   `avcodec-63.dll`.
 

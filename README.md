@@ -20,14 +20,16 @@ What is verified on the reference machine (see [PROGRESS.md](PROGRESS.md)):
   archives at their real disc sectors, registers its interrupt handlers, runs its
   frame/task loop, shows the Square Enix, Cavia and Project Dragonsphere logos, and reaches
   the **title screen**. Controller input works (the game switches the virtual DualShock 2
-  to analog + pressure mode): Start opens the main menu, New Game opens the difficulty prompt.
-- **Not yet**: starting a new game (hangs after the fade-out), full speed (currently ~38%),
-  correct interlaced presentation, audio, movies, saves. There is no gameplay. See the
-  [feature matrix](FEATURES.md) and [PROGRESS.md](PROGRESS.md) for the current blocker.
+  to analog + pressure mode). New Game plays the prologue, "Chapter 1 — Beginnings" and the
+  mission briefing, loads, and starts rendering the first mission (VU1 + GS).
+- **Not yet**: playable speed (the first mission runs at ~0.2 VSync/s because the GS is a
+  single-threaded software rasteriser), correct interlaced presentation, audio, movies,
+  saves. There is no playable gameplay. See [PROGRESS.md](PROGRESS.md) for the blockers.
 
 ## Requirements
 
-- Windows 10/11 x64, a CPU with SSE4.1 (developed on an i5-12400F, RTX 3060).
+- Windows 10/11 x64, a CPU with AVX2 by default (Haswell / Zen 1 or newer; configure with
+  `-DDRAKENGARD_HOST_AVX2=OFF` for SSE4.1-only CPUs). Developed on an i5-12400F, RTX 3060.
 - Your own `Drakengard (USA).iso` (Redump MD5 `300f66970511bf6133cf3af11ffd2a13`).
 - To build: MSYS2 with the CLANG64 toolchain, CMake, Ninja, FFmpeg; Python 3.11+.
 
@@ -78,7 +80,8 @@ Options: `--max-seconds N` exits after N seconds (automated boot tests). Environ
 `PS2X_FRAME_DUMP_DIR=<dir>` (and `PS2X_FRAME_DUMP_EVERY=N`) saves presented frames as PNG;
 `PS2X_PAD_SCRIPT="1300:start:10,1600:cross:10"` presses buttons at given VSync ticks;
 `DKG_TRACE_FUNCS=0xADDR,...` (with `DKG_TRACE_MEM`, `DKG_TRACE_SKIP`, `DKG_TRACE_LIMIT`)
-logs calls to recompiled functions.
+logs calls to recompiled functions; `DKG_PROFILE=<file>` writes a sampling profile
+(summarise with `tools/profile_report.py`).
 Configure with `-DDRAKENGARD_TRACE_CALLS=ON` to log every guest call (slow, huge output).
 
 The launcher verifies the disc's boot ELF (SHA-1 `652d95f1…`) and refuses any other release.

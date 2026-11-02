@@ -7,7 +7,7 @@
 | A — Inspection and feasibility | **done** | RESEARCH.md: build identity, disc inventory, ELF layout, ISA census, tool audit, architecture choice |
 | B — Native execution foundation | **done** | 8,315 functions translated (0 decode failures); `DrakengardPC.exe` executes original game code through IOP init, disc search and interrupt setup into the frame loop (logs below) |
 | C — Boot and title screen | **reached, with known issues** | Square Enix → Cavia → Project Dragonsphere logos → title "PRESS START BUTTON"; scripted input opens the main menu and the New Game difficulty prompt (session 2). Known issues: game runs at ~38% speed, window shows both interlaced field buffers, no audio |
-| D — Playable vertical slice | blocked | New Game hangs after the fade-out (see Main blockers) |
+| D — Playable vertical slice | in progress | New Game → prologue → Chapter 1 → briefing → loading → first mission starts rendering (VU1 + GS), but at ~0.2 VSync/s |
 | E — Compatibility and timing | not started | timing architecture sketched in ARCHITECTURE.md |
 | F — Modern rendering and mods | not started | |
 | G — Complete-game verification | not started | |
@@ -117,22 +117,64 @@ Tests: PS2Recomp `ps2x_tests` 446/446 after updating four upstream tests to the 
 DUALSHOCK 2 semantics above (first GetInfo −1; fixed mode table; IOP heap base). Pipeline
 tests 6/6.
 
+### 2026-11-03 — session 3 (speed, New Game hang)
+
+New tools: `DKG_PROFILE` sampling profiler (+ `tools/profile_report.py`), wall-time shares and
+VSync/s in `[run:sample]`, `DKG_TRACE_MEM` pointer indirection and float display,
+`tools/boot_test.py` automated regression (boot / title / progress / stall).
+
+**Speed** (details and table in RESEARCH.md "Host performance"): profiling showed the guest
+thread ~99% busy with the software GS (67%) and IOP *scheduling bookkeeping* (22%; the IOP
+interpreter itself ~2%). Added an IOP idle fast path (skips scheduling while no IOP thread is
+ready, invalidated by any external input): IOP 22% → 5%. Built the GS sources with
+`-O3 -mavx2` and inlined an exact `lround` (exhaustively checked against `lroundf`).
+Net: ~+40% game-clock progress at equal wall time; the title phase still runs at
+~16 VSync/s because the GS takes ~80% of the guest thread. A single-page texture-buffer
+experiment showed no gain and was reverted (upstream models the GS's 8 KB texture buffer).
+
+**New Game hang fixed.** Root cause: the game seeds a nearest-object search (`0x137214`)
+with `0x7FFFFFFF` as the largest distance. On the PS2 that is the largest float; on the host
+it is NaN, and PS2Recomp's `c.lt.s` used IEEE comparison, so no object was ever assigned and
+a comb sort received n = 0 (`n − 1` unsigned never terminates). EE FPU compares now follow
+PS2 rules (exponent-255 values are large numbers, denormals are zero, nothing unordered),
+with a fast path for ordinary operands; new upstream-style test. Result: Yes → prologue text
+("It is an ancient time…") → ✕ → "Chapter 1 — Beginnings" → mission briefing ("Caim and his
+Union soldiers battle toward the castle…", Weapon / Continue) → Start → "NOW LOADING…".
+
+**libvu0 now runs as recompiled guest code.** 41 `sceVu0*` functions had been replaced by
+native stubs (host float math; upstream #361 disputes one's operand order). The recompiler
+binds handlers by name, so the config generator renames them `guest_*`; 8,091 functions are
+now recompiled, 224 native. Did not change the loading stall below.
+
+**First loading screen stall: `cvt.w.s` rounding.** On "NOW LOADING…" the main thread
+looped in a comb sort (`0x24DC4C`) of visible objects. Tracing showed the visibility test
+passing for several objects, so the list was not empty (first hypothesis wrong). The sort
+computes its gap as `cvt.w.s(gap / 1.3)`; PS2Recomp translated `cvt.w.s` with `nearbyintf`
+(round to nearest), but the R5900 truncates toward zero and saturates out-of-range values.
+With rounding, gap 2 → 2/1.3 = 1.54 → 2, so the gap never reaches 1 and the sort never
+exits. Fixed (PCSX2's formulation) with a new test. Result: loading completes and the
+first mission starts: VU1 microcode runs for the first time (~16% of the guest thread), a
+dark scene with a faint circular HUD element fades in (tick ~3267), but game time drops to
+~0.2 VSync/s (GS ~82%, VU1 ~16%), far too slow to verify combat.
+
+Tests: PS2Recomp `ps2x_tests` 448/448; pipeline tests 6/6; `tools/boot_test.py` 4/4 checks.
+
 ## Main blockers
 
-1. **New Game hangs** after the fade-out (n = 0 sort above). Next: find what populates the
-   object list built at `0x138038` (callers `0x13560C`, `0x135428`, `0x137214`) and which
-   load or creation step fails before it; compare with PCSX2 at the same point.
-2. **Speed ~38%**: the guest VSync clock runs slow; boot-to-title ≈110 s host time.
-3. **Presentation**: the window shows the raw 640×512 region (both interlaced field buffers)
-   instead of the `DISPLAY1` rectangle.
-4. **Audio**: the EzSound driver runs on the IOP but nothing reaches the host.
+1. **Speed is now the gate**: in the first mission the game runs at ~0.2 VSync/s (software GS
+   ~82% and VU1 interpreter ~16% of the guest thread); at the title ~16 VSync/s. Needs the GS
+   off the guest thread (asynchronous, as PCSX2's MTGS) and then the hardware renderer, plus
+   faster VU1 (ahead-of-time translation of the fixed microprogram set).
+3. **Timing catch-up**: after long stalls the scheduler delivered missed VBlanks back to back
+   (~187 VSync/s once); VBlank pacing should resynchronise to wall time.
+4. **Presentation**: both interlaced field buffers are shown.
+5. **Audio**: none reaches the host.
 
 ## Next actions
 
-1. Trace the stage-start path (`0x138038` and its object-list builders) with the trace hooks;
-   check for failed file reads or allocations just before the hang.
-2. Profile where host time goes (VU1 interpreter, software GS, IOP interpreter) and why the
-   VSync clock lags; target real-time 59.94 Hz before timing work.
-3. Crop/merge the interlaced display for presentation.
-4. Add an automated boot test script that runs the scripted path to the title and checks
-   frame-dump hashes.
+1. Asynchronous GS: queue GIF packets to a GS thread; synchronise on FINISH/SIGNAL, VRAM
+   readback, and presentation. Measure with `[run:sample]` / `DKG_PROFILE` in the mission.
+2. Profile the mission scene (VU1 programs, primitive counts) to size the hardware-renderer
+   and VU1 ahead-of-time work.
+3. Resynchronise VBlank deadlines after stalls.
+4. Crop/merge interlaced output; then audio (EzSound on the IOP → host mixer).

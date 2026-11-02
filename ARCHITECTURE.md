@@ -22,7 +22,7 @@ components, listed honestly below.
 
 | Subsystem | How it runs today | Kind | Target |
 |---|---|---|---|
-| EE game code (8,050 functions) | translated C++ from `ps2_recomp` | **recompiled** | stays recompiled; hand-reconstructed C++ for hot or patched systems over time |
+| EE game code (8,050 functions) | translated C++ from `ps2_recomp`; FPU compares follow PS2 rules (no NaN/Inf) | **recompiled** | stays recompiled; hand-reconstructed C++ for hot or patched systems over time |
 | SCE SDK (265 functions: libdma, libgraph, libpad, libcdvd, libsif, libc math…) | native runtime handlers bound by address | **reconstructed (HLE)** | keep; extend per evidence |
 | Other SDK/libc (436 functions) | translated guest code | recompiled | as needed |
 | `sceCdLayerSearchFile` | bound to native `sceCdSearchFile` (`src/overrides`) | reconstructed | — |
@@ -30,12 +30,12 @@ components, listed honestly below.
 | VU0 macro mode | translated inline (SSE) | recompiled | — |
 | VU1 microcode (`.vutext`, `.vudata`, DVP overlays) | PS2Recomp VU1 interpreter | **interpreted** | ahead-of-time translation of the fixed microprogram set |
 | VIF1 / GIF / DMAC | PS2Recomp packet processing | emulated | direct submission to the renderer |
-| GS | PS2Recomp software GS (`gs_cpu_backend`), raylib/OpenGL window | **emulated** (software) | hardware renderer (see "Rendering") |
-| IOP (8 IRX from disc) | ps2xIOP R3000A interpreter + virtual IOP kernel | **interpreted** | HLE or AOT-compiled modules where it pays off |
+| GS | PS2Recomp software GS (`gs_cpu_backend`) on the guest thread, raylib/OpenGL window; ~80% of guest-thread time at the title | **emulated** (software) | asynchronous GS thread next, then the hardware renderer (see "Rendering") |
+| IOP (8 IRX from disc) | ps2xIOP R3000A interpreter + virtual IOP kernel; idle fast path skips scheduling while no IOP thread is ready; 1.4 MB heap | **interpreted** | HLE or AOT-compiled modules where it pays off |
 | SPU2 / sound | not yet producing output (EzSound driver runs on the IOP) | missing | native sound engine driven by LIBSD/EzSound commands |
 | IPU / MPEG movies | PS2Recomp IPU stubs + FFmpeg path | emulated/HLE, untested | FFmpeg decode of the disc's MPEG-2 streams |
 | Disc | real ISO9660 sectors read from the user's image (see below) | native | — |
-| Pads / memory card | PS2Recomp HLE; untested | reconstructed | SDL3 input layer; host save files |
+| Pads / memory card | PS2Recomp HLE with DUALSHOCK 2 analog/pressure modes and libmc result semantics; verified through menus | reconstructed | SDL3 input layer; host save files |
 
 ## Why static recompilation (and not the Bloodborne approach)
 

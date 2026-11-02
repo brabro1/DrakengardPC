@@ -85,6 +85,32 @@ def main() -> int:
     report.insert(0, f"SCE signature names applied to existing starts: {sce_named}, new starts: {sce_new}, "
                      f"conflicts with exact ranges: {sce_conflict}")
 
+    # Keep libvu0 as recompiled guest code. Its functions are plain VU0 macro-mode
+    # code that the recompiler translates exactly (PS2 float rules included); the
+    # runtime's native replacements use host float math and at least one has a
+    # disputed operand order (upstream issue #361). Drakengard's visibility culling
+    # runs through sceVu0ApplyMatrix and friends.
+    guest_prefixes = ("sceVu0",)
+    # ps2_recomp binds runtime handlers by function name as well as by selector, so
+    # these functions are renamed with a guest_ prefix in the map and selectors.
+    moved = [s for s in kept["stubs"] if selector_split(s)[0].startswith(guest_prefixes)]
+    kept["stubs"] = [s for s in kept["stubs"] if s not in moved]
+    guest_renamed = set()
+    for i, sel in enumerate(kept["entry_points"]):
+        name, addr = selector_split(sel)
+        if name.startswith(guest_prefixes) and addr is not None:
+            kept["entry_points"][i] = f"guest_{name}@0x{addr:08X}"
+            guest_renamed.add(addr)
+    for sel in moved:
+        name, addr = selector_split(sel)
+        if addr is not None:
+            kept["entry_points"].append(f"guest_{name}@0x{addr:08X}")
+            guest_renamed.add(addr)
+    for addr in guest_renamed:
+        if addr in funcs and funcs[addr]["sce"] and not funcs[addr]["sce"].startswith("guest_"):
+            funcs[addr]["sce"] = "guest_" + funcs[addr]["sce"]
+    report.append(f"kept as recompiled guest code instead of native stubs: {len(moved)} ({', '.join(guest_prefixes)}*)")
+
     used: dict[str, int] = {}
     rows = []
     for s in sorted(funcs):

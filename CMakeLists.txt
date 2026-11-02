@@ -31,6 +31,27 @@ set(PS2X_ENABLE_SCCACHE OFF CACHE BOOL "" FORCE)
 option(DRAKENGARD_TRACE_CALLS "Log every guest function entry/exit to ps2_log.txt (very slow)" OFF)
 set(PS2X_ENABLE_AGRESSIVE_LOGS ${DRAKENGARD_TRACE_CALLS} CACHE BOOL "" FORCE)
 add_subdirectory(external/PS2Recomp EXCLUDE_FROM_ALL)
+if(NOT MSVC)
+    # Line tables for the runtime (not the generated code) so tools/profile_report.py
+    # can attribute DKG_PROFILE samples to source functions.
+    target_compile_options(ps2_runtime PRIVATE -g1)
+    target_compile_options(ps2_iop PRIVATE -g1)
+endif()
+
+# The software GS rasteriser is the hottest host code (DKG_PROFILE: ~55% of the guest
+# thread at the title screen). Optimise it harder; AVX2 is opt-in because it raises the
+# CPU requirement (Haswell / Zen 1 or newer).
+option(DRAKENGARD_HOST_AVX2 "Build the software GS with AVX2" ON)
+if(NOT MSVC)
+    set(DRAKENGARD_GS_FLAGS -O3)
+    if(DRAKENGARD_HOST_AVX2)
+        list(APPEND DRAKENGARD_GS_FLAGS -mavx2 -mfma -mbmi -mbmi2 -mlzcnt)
+    endif()
+    file(GLOB DRAKENGARD_GS_SOURCES "${CMAKE_SOURCE_DIR}/external/PS2Recomp/ps2xRuntime/src/lib/gs/*.cpp")
+    set_source_files_properties(${DRAKENGARD_GS_SOURCES}
+        DIRECTORY external/PS2Recomp/ps2xRuntime
+        PROPERTIES COMPILE_OPTIONS "${DRAKENGARD_GS_FLAGS}")
+endif()
 
 file(GLOB DRAKENGARD_GENERATED_SOURCES CONFIGURE_DEPENDS "${DRAKENGARD_GENERATED_DIR}/*.cpp")
 list(LENGTH DRAKENGARD_GENERATED_SOURCES DRAKENGARD_GENERATED_COUNT)
@@ -60,6 +81,7 @@ add_executable(DrakengardPC
     src/game_identity.cpp
     src/overrides/drakengard_overrides.cpp
     src/debug/trace_hooks.cpp
+    src/debug/sampler.cpp
 )
 target_include_directories(DrakengardPC PRIVATE src)
 target_link_libraries(DrakengardPC PRIVATE drakengard_generated ps2_runtime)
@@ -69,4 +91,5 @@ endif()
 if(MINGW)
     # Large guest-call recursion depth during boot; match the PS2Recomp tests.
     target_link_options(DrakengardPC PRIVATE -Wl,--stack,8388608 -static-libgcc -static-libstdc++)
+    target_link_libraries(DrakengardPC PRIVATE psapi)
 endif()

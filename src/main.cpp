@@ -4,6 +4,7 @@
 // files the IOP side loads by name (ELF, IRX modules), points the runtime at the
 // disc image for everything else, then runs the statically recompiled game code.
 
+#include "debug/sampler.h"
 #include "disc/iso9660.h"
 #include "game_identity.h"
 
@@ -147,10 +148,13 @@ int main(int argc, char **argv)
         std::thread([s = opt.maxSeconds]() {
             std::this_thread::sleep_for(std::chrono::seconds(s));
             std::cout << "\n[host] --max-seconds " << s << " reached, exiting" << std::endl;
+            dkg::debug::stopSamplerAndWrite();
             std::cerr.flush();
             std::_Exit(0);
         }).detach();
     }
+
+    dkg::debug::startSampler();
 
     try
     {
@@ -173,6 +177,7 @@ int main(int argc, char **argv)
         PS2Runtime::setIoPaths(paths);
 
         runtime.run();
+        dkg::debug::stopSamplerAndWrite();
     }
     catch (const std::exception &e)
     {

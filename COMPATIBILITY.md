@@ -24,9 +24,13 @@ Addresses, function maps and overrides are specific to the supported ELF.
 | 2026-11-02 | Boot to title screen | pass — logos then title at tick ~1093; ~38% speed | session 2, run 18 |
 | 2026-11-02 | Title → main menu → New Game prompt (scripted Start, ✕) | pass | session 2, run 29 |
 | 2026-11-02 | Start a new game (Yes) | fail — black screen, hang in object sort with n = 0 | session 2, run 30 |
+| 2026-11-03 | Start a new game (Yes) | pass — prologue text after the PS2 FPU compare fix | session 3, boot_test |
+| 2026-11-03 | Prologue → Chapter 1 → mission briefing → Continue (scripted ✕/Start) | pass | session 3, run 43 |
+| 2026-11-03 | First mission load | fail — stuck on "NOW LOADING…" (comb sort never ends: `cvt.w.s` rounded instead of truncating) | session 3, run 44 |
+| 2026-11-03 | First mission load after `cvt.w.s` fix | partial — loads, scene fades in with VU1 rendering; ~0.2 VSync/s | session 3, run 47 |
 
 ## Host
 
 | Machine | OS | CPU | GPU | Result |
 |---|---|---|---|---|
-| reference | Windows 11 Pro 26300 | i5-12400F | RTX 3060 (32.0.16.2101) | builds; boots to the title screen and menus |
+| reference | Windows 11 Pro 26300 | i5-12400F | RTX 3060 (32.0.16.2101) | builds; boots through the title, menus, prologue and briefing to the first loading screen |

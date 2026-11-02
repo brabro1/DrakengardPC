@@ -160,3 +160,46 @@ Addresses are for SLUS-20732 v1.00 only. Names in quotes are descriptive, not or
 
 Boot sequence (observed VSync ticks at ~38% speed): fade-in 185 → Square Enix logo ~305 →
 Cavia ~605 → Project Dragonsphere ~845 → title ~1093.
+
+## Host performance (Observed, session 3; i5-12400F, title-screen phase)
+
+Measured with `DKG_PROFILE` (1 ms sampling of every thread) and the `[run:sample]` wall-time
+shares. The process is CPU-bound on one guest thread (~1.1 cores used). VSync events fire
+only when both wall time and the guest's charged EE cycles reach the deadline, so host time
+spent in GS/IOP work slows the game clock.
+
+| Change | Guest-thread share before → after | VSync reached at host frame 2700 |
+|---|---|---|
+| baseline | GS 67%, IOP 22% (IOP: `IopKernel::beginNextReady` 11%, `nextWakeCycle` 6%, timers 2%; interpreter itself ~2%) | 632 |
+| IOP idle fast path (skip scheduling while no IOP thread is ready; invalidated by every external input) | IOP 22% → 5% | 793 |
+| GS sources at `-O3 -mavx2` | — | 896 |
+| inline `lround` in bilinear filtering (exhaustively equal to `lroundf` for \|x\| < 2³¹) | `ucrtbase` 13% → 4.5% | 858–896 (noise ±5%) |
+| direct texel reads instead of the 8 KB texture-page snapshot (reverted: upstream models the GS texture buffer) | — | 884 (no gain) |
+
+Remaining profile at the title: `SampleTexture` (+ fetch lambda) ~36%, `WritePixel` 15%,
+`ReadTexture` 8%, `Submit` 6.5%, EE `checkpointDue` 8% and `advanceEeTimers` 6.5% (a hash-map
+lookup of `GIF_STAT` per cycle charge). The game clock runs at ~16 VSync/s (27% of 59.94 Hz)
+in this phase; boot to title is ~100 s. Real-time speed needs the software GS off the guest
+thread (asynchronous GS like PCSX2's MTGS) or the planned hardware renderer.
+
+## New-game hang root cause (Observed, session 3)
+
+`0x137214` assigns each scene object (list built in `0x138038`) to the nearest "category"
+object within a maximum distance; the distance is computed with VU0 macro ops (`vsub`,
+`vmul`, `vaddy/z`, `vsqrt`, `vaddq`). The initial maximum is the float at `0x56A2F8`
+= `0x7FFFFFFF`: the PS2's largest value, but an IEEE NaN on the host. PS2Recomp's
+`c.lt.s` used host float comparison, so `distance < NaN` was always false, no object got a
+category (`+0xE0 = 0`), and the comb sort in `0x137478` was called with n = 0, whose
+unsigned bound `n − 1` never terminates. Memory dump at the call: both list objects and the
+category at the origin (distance 0). Fix: EE FPU compares use PS2 semantics (exponent-255
+values are large numbers, denormals are zero, nothing is unordered).
+
+## First-loading-screen stall (Observed, session 3)
+
+`0x24DD08` builds a list of objects that pass a visibility test (`0x24DA94` →
+`0x25C324` → `0x275F5C`; traced: several pass) and sorts it by distance with a comb sort
+at `0x24DC4C`. The gap is `cvt.w.s((float)gap / 1.3f)` (constant at `gp−0x43D0`), with the
+Combsort11 rule (gaps 9 and 10 become 11) and exit when gap < 2 and no swaps. PS2Recomp
+translated `cvt.w.s` as `nearbyintf` (round to nearest): 2 / 1.3 = 1.54 → 2, so the gap
+never reached 1. The R5900 `cvt.w.s` truncates toward zero and saturates |x| ≥ 2³¹ by sign
+(PCSX2: `(x & 0x7F800000) <= 0x4E800000 ? (s32)x : sign ? 0x80000000 : 0x7FFFFFFF`).

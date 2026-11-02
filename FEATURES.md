@@ -19,7 +19,8 @@ Tested setup: Windows 11 Pro 26300, i5-12400F, RTX 3060, Drakengard (USA) SLUS-2
 | Boot logos (Square Enix, Cavia, Project Dragonsphere) | verified | session 2 |
 | Title screen | verified | reached at VSync tick ~1093 (≈110 s host time) |
 | Main menu and New Game difficulty prompt | verified | via scripted input |
-| Starting a new game | planned | hangs after the fade-out (n = 0 object sort) |
+| Starting a new game | verified | prologue text, "Chapter 1 — Beginnings", mission briefing (session 3) |
+| First mission (ground combat) | implemented, not verifiable yet | loads and starts rendering; runs at ~0.2 VSync/s |
 | Ground combat, dragon flight, story, endings | planned | |
 | Audio (EzSound on IOP → host audio) | planned | driver runs on IOP; no output path |
 | FMV playback (IPU MPEG-2) | planned | FFmpeg linked; untested |
@@ -84,4 +85,6 @@ Tested setup: Windows 11 Pro 26300, i5-12400F, RTX 3060, Drakengard (USA) SLUS-2
 | Bounded automated runs | verified | `--max-seconds` |
 | Pipeline invariant tests | verified | `tests/test_pipeline.py` (6 tests) |
 | Function trace hooks + memory watch | verified | `DKG_TRACE_FUNCS`, `DKG_TRACE_MEM`, `DKG_TRACE_SKIP` |
-| Position samples without call tracing | verified | `[run:sample]` every 300 host frames |
+| Position samples without call tracing | verified | `[run:sample]` every 300 host frames, with VSync/s and IOP/VU1/GS wall-time shares |
+| Sampling profiler | verified | `DKG_PROFILE` + `tools/profile_report.py` |
+| Automated boot regression | verified | `tools/boot_test.py` (boot, title, progress, stall checks) |
