@@ -1,5 +1,6 @@
 #if defined(PS2X_HAVE_PARALLEL_GS)
 #include "runtime/vu_aot.h"
+#include "runtime/ee_wait_loops.h"
 #include "runtime/gs/gs_parallel_backend.h"
 #endif
 #include "ps2_runtime.h"
@@ -2310,8 +2311,58 @@ void PS2Runtime::postEeEvent(EeEvent event)
     m_eeScheduler->postEvent(event);
 }
 
+namespace
+{
+    // Diagnostic: PS2X_CHECKPOINT_PROFILE=1 samples the guest pc at every 64th EE checkpoint
+    // and prints the busiest sites with each [run:sample] line.
+    const bool g_checkpointProfile = []
+    {
+        const char *value = std::getenv("PS2X_CHECKPOINT_PROFILE");
+        return value && value[0] == '1';
+    }();
+    std::unordered_map<uint32_t, uint32_t> g_checkpointSites;
+    uint32_t g_checkpointTick = 0;
+}
+
+namespace
+{
+    struct WaitLoop
+    {
+        uint32_t pc;
+        uint32_t cycles;
+    };
+    WaitLoop g_waitLoops[8];
+    uint32_t g_waitLoopCount = 0;
+}
+
+void ps2x::registerEeWaitLoop(uint32_t checkpointPc, uint32_t cyclesPerPass)
+{
+    if (g_waitLoopCount < 8u)
+        g_waitLoops[g_waitLoopCount++] = {checkpointPc, cyclesPerPass};
+}
+
 bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
 {
+    if (g_waitLoopCount != 0u)
+    {
+        if (const GuestThread *thread = m_eeScheduler->currentThread())
+        {
+            const uint32_t pc = thread->activeContext().pc;
+            for (uint32_t i = 0; i < g_waitLoopCount; ++i)
+            {
+                if (g_waitLoops[i].pc == pc)
+                {
+                    cycles = std::max(cycles, g_waitLoops[i].cycles);
+                    break;
+                }
+            }
+        }
+    }
+    if (g_checkpointProfile && (++g_checkpointTick & 63u) == 0u)
+    {
+        if (const GuestThread *thread = m_eeScheduler->currentThread())
+            ++g_checkpointSites[thread->activeContext().pc];
+    }
     return m_eeScheduler->checkpointDue(cycles);
 }
 
@@ -2520,6 +2571,17 @@ void PS2Runtime::run()
                                               << " vu-interp(k pairs): vu0=" << vuaot::g_interpretedPairs[0].exchange(0) / 1000
                                               << " vu1=" << vuaot::g_interpretedPairs[1].exchange(0) / 1000
                                               << " vu1-aot(k cyc)=" << vuaot::g_compiledCycles.exchange(0) / 1000 << std::endl);
+            if (g_checkpointProfile && !g_checkpointSites.empty())
+            {
+                std::vector<std::pair<uint32_t, uint32_t>> sites(g_checkpointSites.begin(), g_checkpointSites.end());
+                std::sort(sites.begin(), sites.end(), [](const auto &a, const auto &b) { return a.second > b.second; });
+                std::ostringstream line;
+                line << "[run:checkpoints] x64:";
+                for (size_t i = 0; i < std::min<size_t>(8u, sites.size()); ++i)
+                    line << " 0x" << std::hex << sites[i].first << std::dec << "=" << sites[i].second;
+                RUNTIME_LOG(line.str() << std::endl);
+                g_checkpointSites.clear();
+            }
             lastTsc = nowTsc;
             lastTime = nowTime;
             lastVsync = vsyncNow;

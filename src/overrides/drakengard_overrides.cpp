@@ -7,6 +7,7 @@
 
 #include "game_overrides.h"
 #include "ps2_runtime.h"
+#include "runtime/ee_wait_loops.h"
 
 #include <cstdint>
 #include <iostream>
@@ -37,6 +38,8 @@ namespace
          "single-layer DVD-5 so the layer argument is always 0"},
     };
 
+    constexpr uint32_t kFrameWaitCyclesPerPass = 2048u;
+
     void applyDrakengard(PS2Runtime &runtime)
     {
         for (const Binding &b : kBindings)
@@ -46,6 +49,12 @@ namespace
                       << std::hex << b.address << std::dec << " -> native " << b.handler << " (" << b.reason << ")"
                       << std::endl;
         }
+        // Main-loop frame wait (sub_0027dd7c @0x27DE1C, inferred): reads T1_COUNT, calls a
+        // per-pass callback and spins until an interrupt handler sets the frame flag
+        // (func_27ED44). Charged 32 cycles per pass it iterated ~80,000 times per frame.
+        ps2x::registerEeWaitLoop(0x0027DE1Cu, kFrameWaitCyclesPerPass);
+        std::cout << "[dkg-override] wait loop @0x27de1c charged " << kFrameWaitCyclesPerPass
+                  << " EE cycles per pass" << std::endl;
 #if defined(DRAKENGARD_HAVE_VU1_AOT)
         // VU1 microprograms compiled ahead of time (tools/vu_recomp.py).
         drakengardRegisterVuPrograms();

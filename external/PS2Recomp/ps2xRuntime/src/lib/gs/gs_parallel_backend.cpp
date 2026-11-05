@@ -14,7 +14,10 @@
 #include <algorithm>
 #include <cstring>
 #include <iostream>
+#include <condition_variable>
 #include <mutex>
+#include <thread>
+#include <vector>
 
 namespace
 {
@@ -28,10 +31,56 @@ struct GSParallelBackend::Impl
     Vulkan::Context context;
     Vulkan::Device device;
     ParallelGS::GSInterface iface;
-    Vulkan::BufferHandle readback;
-    mutable std::mutex mutex;
+    // Pipelined readback: each Present submits a copy of the new scanout and returns the
+    // previous one, so neither the host nor the game thread waits for in-flight GPU work.
+    struct Readback
+    {
+        Vulkan::BufferHandle buffer;
+        Vulkan::Fence fence;
+        uint32_t width = 0, height = 0, stride = 0;
+        bool bgra = false;
+        bool pending = false;
+    };
+    Readback readbacks[3];
+    uint32_t readbackIndex = 0;
+    mutable std::mutex mutex; // held by whoever drives paraLLEl-GS (the worker, or a drained caller)
     uint32_t trxdir = 3u;
     bool loggedClear = false;
+
+    // GS worker thread (as PCSX2's MTGS): the game thread only queues work.
+    struct Command
+    {
+        enum Kind : uint8_t { Gif, Reg, Vsync } kind = Gif;
+        uint32_t path = 0;
+        uint64_t value = 0;
+        std::vector<uint8_t> data;
+        uint64_t regs[15] = {};
+        GSPresentationRequest request{};
+    };
+    std::mutex queueMutex;
+    std::condition_variable queueCv;
+    std::condition_variable idleCv;
+    std::vector<Command> queue;
+    bool busy = false;
+    bool stop = false;
+    std::thread worker;
+
+    std::mutex frameMutex;
+    PresentationFrame latestFrame;
+
+    void push(Command &&command)
+    {
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            queue.push_back(std::move(command));
+        }
+        queueCv.notify_one();
+    }
+    void drain()
+    {
+        std::unique_lock<std::mutex> lock(queueMutex);
+        idleCv.wait(lock, [&] { return queue.empty() && !busy; });
+    }
 };
 
 GSParallelBackend::GSParallelBackend() = default;
@@ -39,6 +88,13 @@ GSParallelBackend::~GSParallelBackend()
 {
     if (m_impl)
     {
+        {
+            std::lock_guard<std::mutex> lock(m_impl->queueMutex);
+            m_impl->stop = true;
+        }
+        m_impl->queueCv.notify_all();
+        if (m_impl->worker.joinable())
+            m_impl->worker.join();
         std::lock_guard<std::mutex> lock(m_impl->mutex);
         m_impl->iface.flush();
         m_impl->device.wait_idle();
@@ -85,13 +141,58 @@ bool GSParallelBackend::create(uint32_t superSampling)
     std::cerr << "[gs:parallel] paraLLEl-GS on " << impl->device.get_gpu_properties().deviceName
               << " ssaa=" << static_cast<uint32_t>(options.super_sampling) << std::endl;
     m_impl = std::move(impl);
+    m_impl->worker = std::thread([this] { workerLoop(); });
     return true;
+}
+
+void GSParallelBackend::workerLoop()
+{
+    Impl &s = *m_impl;
+    std::vector<Impl::Command> batch;
+    for (;;)
+    {
+        {
+            std::unique_lock<std::mutex> lock(s.queueMutex);
+            s.busy = false;
+            s.idleCv.notify_all();
+            s.queueCv.wait(lock, [&] { return s.stop || !s.queue.empty(); });
+            if (s.stop && s.queue.empty())
+                return;
+            batch.swap(s.queue);
+            s.busy = true;
+        }
+        std::lock_guard<std::mutex> lock(s.mutex);
+        for (Impl::Command &command : batch)
+        {
+            switch (command.kind)
+            {
+            case Impl::Command::Gif:
+                s.iface.gif_transfer(command.path, command.data.data(), command.data.size());
+                break;
+            case Impl::Command::Reg:
+                s.iface.write_register(ParallelGS::RegisterAddr(command.path), command.value);
+                break;
+            case Impl::Command::Vsync:
+            {
+                PresentationFrame frame = scanout(command.regs, command.request);
+                if (frame)
+                {
+                    std::lock_guard<std::mutex> frameLock(s.frameMutex);
+                    s.latestFrame = std::move(frame);
+                }
+                break;
+            }
+            }
+        }
+        batch.clear();
+    }
 }
 
 void GSParallelBackend::Initialize(uint8_t *vram, uint32_t vramSize)
 {
     if (!m_impl || !vram || vramSize == 0u)
         return;
+    m_impl->drain();
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     const uint32_t bytes = std::min(vramSize, kVramSize);
     void *dst = m_impl->iface.map_vram_write(0, bytes);
@@ -103,6 +204,7 @@ void GSParallelBackend::Reset()
 {
     if (!m_impl)
         return;
+    m_impl->drain();
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     m_impl->iface.reset_context_state();
 }
@@ -122,6 +224,7 @@ void GSParallelBackend::Sync(GSSyncReason reason)
 {
     if (!m_impl || reason != GSSyncReason::Reset)
         return;
+    m_impl->drain();
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     m_impl->iface.flush();
 }
@@ -130,24 +233,49 @@ void GSParallelBackend::RawGifPacket(uint32_t path, const uint8_t *data, uint32_
 {
     if (!m_impl || !data || sizeBytes < 16u)
         return;
-    std::lock_guard<std::mutex> lock(m_impl->mutex);
-    m_impl->iface.gif_transfer(std::min<uint32_t>(path, 3u), data, sizeBytes & ~15u);
+    Impl::Command command;
+    command.kind = Impl::Command::Gif;
+    command.path = std::min<uint32_t>(path, 3u);
+    command.data.assign(data, data + (sizeBytes & ~15u));
+    m_impl->push(std::move(command));
 }
 
 void GSParallelBackend::RawRegisterWrite(uint8_t addr, uint64_t value)
 {
     if (!m_impl)
         return;
-    std::lock_guard<std::mutex> lock(m_impl->mutex);
-    m_impl->iface.write_register(ParallelGS::RegisterAddr(addr), value);
+    Impl::Command command;
+    command.kind = Impl::Command::Reg;
+    command.path = addr;
+    command.value = value;
+    m_impl->push(std::move(command));
 }
 
 PresentationFrame GSParallelBackend::Present(const GSPresentationRequest &request)
 {
-    PresentationFrame frame{};
     if (!m_impl)
-        return frame;
-    std::lock_guard<std::mutex> lock(m_impl->mutex);
+        return {};
+    // Queue a scanout with the CRTC registers as they are now and hand back the newest frame
+    // the worker has finished (one or two VSyncs behind).
+    Impl::Command command;
+    command.kind = Impl::Command::Vsync;
+    command.request = request;
+    if (m_privRegs)
+    {
+        const uint64_t regs[15] = {m_privRegs->pmode, m_privRegs->smode1, m_privRegs->smode2, m_privRegs->srfsh,
+                                   m_privRegs->synch1, m_privRegs->synch2, m_privRegs->syncv, m_privRegs->dispfb1,
+                                   m_privRegs->display1, m_privRegs->dispfb2, m_privRegs->display2, m_privRegs->extbuf,
+                                   m_privRegs->extdata, m_privRegs->extwrite, m_privRegs->bgcolor};
+        std::memcpy(command.regs, regs, sizeof(regs));
+    }
+    m_impl->push(std::move(command));
+    std::lock_guard<std::mutex> frameLock(m_impl->frameMutex);
+    return m_impl->latestFrame;
+}
+
+PresentationFrame GSParallelBackend::scanout(const uint64_t (&regs)[15], const GSPresentationRequest &request)
+{
+    PresentationFrame frame{};
     auto &iface = m_impl->iface;
     auto &device = m_impl->device;
 
@@ -155,10 +283,6 @@ PresentationFrame GSParallelBackend::Present(const GSPresentationRequest &reques
     auto &priv = iface.get_priv_register_state();
     if (m_privRegs)
     {
-        const uint64_t regs[15] = {m_privRegs->pmode, m_privRegs->smode1, m_privRegs->smode2, m_privRegs->srfsh,
-                                   m_privRegs->synch1, m_privRegs->synch2, m_privRegs->syncv, m_privRegs->dispfb1,
-                                   m_privRegs->display1, m_privRegs->dispfb2, m_privRegs->display2, m_privRegs->extbuf,
-                                   m_privRegs->extdata, m_privRegs->extwrite, m_privRegs->bgcolor};
         for (uint32_t i = 0; i < 15u; ++i)
             priv.qwords_lo[i * 2u] = regs[i];
         if (regs[1] == 0u)
@@ -205,46 +329,63 @@ PresentationFrame GSParallelBackend::Present(const GSPresentationRequest &reques
         return frame;
     }
 
-    const uint32_t width = std::min(scanout.image->get_width(), kHostFrameWidth);
-    const uint32_t height = std::min(scanout.image->get_height(), kHostFrameHeight);
-    const VkDeviceSize bytes = VkDeviceSize(scanout.image->get_width()) * scanout.image->get_height() * 4u;
-    if (!m_impl->readback || m_impl->readback->get_create_info().size < bytes)
+    auto &rb = m_impl->readbacks;
+    auto &slot = rb[m_impl->readbackIndex];
+    const uint32_t imageWidth = scanout.image->get_width();
+    const uint32_t imageHeight = scanout.image->get_height();
+    const VkDeviceSize bytes = VkDeviceSize(imageWidth) * imageHeight * 4u;
+    if (slot.pending)
+        slot.fence->wait(); // three slots: this is the frame from two presents ago
+    if (!slot.buffer || slot.buffer->get_create_info().size < bytes)
     {
         Vulkan::BufferCreateInfo info{};
         info.size = bytes;
         info.domain = Vulkan::BufferDomain::CachedHost;
         info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        m_impl->readback = device.create_buffer(info);
+        slot.buffer = device.create_buffer(info);
     }
-
-    auto cmd = device.request_command_buffer();
-    cmd->copy_image_to_buffer(*m_impl->readback, *scanout.image, 0, {0, 0, 0},
-                              {scanout.image->get_width(), scanout.image->get_height(), 1}, 0, 0,
-                              {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1});
-    cmd->barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                 VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT);
-    Vulkan::Fence fence;
-    device.submit(cmd, &fence);
-    fence->wait();
-
-    const auto *src = static_cast<const uint8_t *>(device.map_host_buffer(*m_impl->readback, Vulkan::MEMORY_ACCESS_READ_BIT));
-    const VkFormat format = scanout.image->get_format();
-    const bool bgra = format == VK_FORMAT_B8G8R8A8_UNORM || format == VK_FORMAT_B8G8R8A8_SRGB;
-    frame.pixels.assign(size_t(kHostFrameWidth) * kHostFrameHeight * 4u, 0u);
-    const size_t srcStride = size_t(scanout.image->get_width()) * 4u;
-    for (uint32_t y = 0; y < height; ++y)
     {
-        const uint8_t *s = src + y * srcStride;
-        uint8_t *d = frame.pixels.data() + size_t(y) * kHostFrameWidth * 4u;
-        for (uint32_t x = 0; x < width; ++x, s += 4, d += 4)
-        {
-            d[0] = bgra ? s[2] : s[0];
-            d[1] = s[1];
-            d[2] = bgra ? s[0] : s[2];
-            d[3] = 0xFFu;
-        }
+        auto cmd = device.request_command_buffer();
+        cmd->copy_image_to_buffer(*slot.buffer, *scanout.image, 0, {0, 0, 0}, {imageWidth, imageHeight, 1}, 0, 0,
+                                  {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1});
+        cmd->barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                     VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT);
+        slot.fence.reset();
+        device.submit(cmd, &slot.fence);
+        const VkFormat format = scanout.image->get_format();
+        slot.bgra = format == VK_FORMAT_B8G8R8A8_UNORM || format == VK_FORMAT_B8G8R8A8_SRGB;
+        slot.width = std::min(imageWidth, kHostFrameWidth);
+        slot.height = std::min(imageHeight, kHostFrameHeight);
+        slot.stride = imageWidth * 4u;
+        slot.pending = true;
     }
-    device.unmap_host_buffer(*m_impl->readback, Vulkan::MEMORY_ACCESS_READ_BIT);
+    m_impl->readbackIndex = (m_impl->readbackIndex + 1u) % 3u;
+
+    // Return the oldest completed copy (one present behind).
+    auto &done = rb[(m_impl->readbackIndex + 1u) % 3u];
+    uint32_t width = 0, height = 0;
+    if (done.pending && done.fence)
+    {
+        done.fence->wait();
+        const auto *src = static_cast<const uint8_t *>(device.map_host_buffer(*done.buffer, Vulkan::MEMORY_ACCESS_READ_BIT));
+        frame.pixels.assign(size_t(kHostFrameWidth) * kHostFrameHeight * 4u, 0u);
+        for (uint32_t y = 0; y < done.height; ++y)
+        {
+            const uint8_t *s = src + size_t(y) * done.stride;
+            uint8_t *d = frame.pixels.data() + size_t(y) * kHostFrameWidth * 4u;
+            for (uint32_t x = 0; x < done.width; ++x, s += 4, d += 4)
+            {
+                d[0] = done.bgra ? s[2] : s[0];
+                d[1] = s[1];
+                d[2] = done.bgra ? s[0] : s[2];
+                d[3] = 0xFFu;
+            }
+        }
+        device.unmap_host_buffer(*done.buffer, Vulkan::MEMORY_ACCESS_READ_BIT);
+        done.pending = false;
+        width = done.width;
+        height = done.height;
+    }
     device.next_frame_context();
 
     frame.width = width;
@@ -268,6 +409,7 @@ uint32_t GSParallelBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBy
 {
     if (!m_impl || !dst || maxBytes < 16u)
         return 0u;
+    m_impl->drain();
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     const uint32_t words = maxBytes / 16u;
     m_impl->iface.read_transfer_fifo(dst, words);
@@ -278,6 +420,7 @@ uint32_t GSParallelBackend::ReadVram(uint32_t psm, uint32_t base, uint32_t bw, u
 {
     if (!m_impl)
         return 0u;
+    m_impl->drain();
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     auto *vram = static_cast<uint8_t *>(const_cast<void *>(m_impl->iface.map_vram_read(0, kVramSize)));
     switch (psm)
@@ -292,6 +435,7 @@ void GSParallelBackend::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint
 {
     if (!m_impl)
         return;
+    m_impl->drain();
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     auto *vram = static_cast<uint8_t *>(m_impl->iface.map_vram_write(0, kVramSize));
     switch (psm)
@@ -309,6 +453,7 @@ void GSParallelBackend::SnapshotVram(std::vector<uint8_t> &out) const
     out.clear();
     if (!m_impl)
         return;
+    m_impl->drain();
     std::lock_guard<std::mutex> lock(m_impl->mutex);
     const auto *vram = static_cast<const uint8_t *>(m_impl->iface.map_vram_read(0, kVramSize));
     out.assign(vram, vram + kVramSize);

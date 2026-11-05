@@ -47,6 +47,9 @@ public:
     void SetPrivilegedRegisters(const GSRegisters *regs) override { m_privRegs = regs; }
 
 private:
+    void workerLoop();
+    PresentationFrame scanout(const uint64_t (&regs)[15], const GSPresentationRequest &request);
+
     struct Impl;
     std::unique_ptr<Impl> m_impl;
     const GSRegisters *m_privRegs = nullptr;
