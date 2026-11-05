@@ -1,3 +1,6 @@
+#if defined(PS2X_HAVE_PARALLEL_GS)
+#include "runtime/gs/gs_parallel_backend.h"
+#endif
 #include "ps2_runtime.h"
 #include "ps2_log.h"
 #include "ps2_stubs.h"
@@ -719,8 +722,21 @@ bool PS2Runtime::syncCoreSubsystems()
     }
 
     m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
+#if defined(PS2X_HAVE_PARALLEL_GS)
+    {
+        // GPU GS (paraLLEl-GS) unless PS2X_GS_RENDERER=cpu. PS2X_GS_SSAA=1/2/4/8/16 sets supersampling.
+        const char *renderer = std::getenv("PS2X_GS_RENDERER");
+        if (!renderer || std::string(renderer) != "cpu")
+        {
+            const char *ssaa = std::getenv("PS2X_GS_SSAA");
+            auto backend = std::make_unique<GSParallelBackend>();
+            if (backend->create(ssaa ? static_cast<uint32_t>(std::strtoul(ssaa, nullptr, 10)) : 1u))
+                m_gs.setRasterBackend(std::move(backend));
+        }
+    }
+#endif
     m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
-                                    { ProfileScope profile(g_profGifTsc); m_gs.processGIFPacket(data, size); });
+                                    { ProfileScope profile(g_profGifTsc); m_gs.processGIFPacket(data, size, static_cast<uint32_t>(m_gifArbiter.currentPath())); });
     m_memory.setGifArbiter(&m_gifArbiter);
     m_memory.setVu1MscalCallback([this](uint32_t startPC, uint32_t top, uint32_t itop)
                                  {

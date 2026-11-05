@@ -29,6 +29,8 @@ public:
     explicit GifArbiter(ProcessPacketFn processFn);
 
     void setProcessPacketFn(ProcessPacketFn fn) { m_processFn = std::move(fn); }
+    // Path of the packet currently being delivered to the process function.
+    GifPathId currentPath() const { return m_currentPath; }
 
     void submit(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool path2DirectHl = false);
 
@@ -37,6 +39,7 @@ public:
 
 private:
     ProcessPacketFn m_processFn;
+    GifPathId m_currentPath = GifPathId::Path3;
     std::vector<GifArbiterPacket> m_queue;
 
     static bool isImagePacket(const uint8_t *data, uint32_t sizeBytes);

@@ -509,6 +509,13 @@ target_include_directories(ps2_runtime PUBLIC
 )
 
 target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
+
+# Optional GPU GS: paraLLEl-GS (LGPL-3.0+), provided by the embedding project as target `parallel-gs`.
+if(TARGET parallel-gs)
+    target_sources(ps2_runtime PRIVATE src/lib/gs/gs_parallel_backend.cpp)
+    target_link_libraries(ps2_runtime PRIVATE parallel-gs)
+    target_compile_definitions(ps2_runtime PRIVATE PS2X_HAVE_PARALLEL_GS=1)
+endif()
 target_link_libraries(ps2EntryRunner
     PRIVATE
     ps2_runtime

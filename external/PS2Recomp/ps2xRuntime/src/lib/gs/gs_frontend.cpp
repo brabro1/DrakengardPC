@@ -119,6 +119,7 @@ void GS::init(uint8_t *vram, uint32_t vramSize, GSRegisters *privRegs)
     m_privRegs = privRegs;
     if (!m_backend)
         m_backend = std::make_unique<GSCpuBackend>();
+    m_backend->SetPrivilegedRegisters(privRegs);
     m_backend->Initialize(vram, vramSize);
     reset();
 }
@@ -639,11 +640,14 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
     return true;
 }
 
-void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
+void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes, uint32_t path)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     if (!data || sizeBytes < 16 || !m_backend)
         return;
+
+    if (m_backend->WantsRawGif())
+        m_backend->RawGifPacket(path, data, sizeBytes);
 
     if (tryProcessNativeImageUploadPacket(data, sizeBytes))
         return;
@@ -747,6 +751,9 @@ bool GS::processNativePackedGIFPacket(const uint8_t *data, uint32_t sizeBytes)
     if (!validatePackedGifPacket(data, sizeBytes))
         return false;
 
+    if (m_backend->WantsRawGif())
+        m_backend->RawGifPacket(3u, data, sizeBytes);
+
     const bool processed = visitPackedGifPacket(data, sizeBytes, [&](const PackedGifPacketTag &tag)
                                                 {
         m_curQ = 1.0f;
@@ -786,6 +793,26 @@ void GS::uploadImageNative(uint64_t bitbltbuf,
                            uint32_t sizeBytes)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    if (data && sizeBytes != 0u && m_backend && m_backend->WantsRawGif())
+    {
+        // Rebuild the GIF packet the native helper replaced: A+D setup, then IMAGE data.
+        const uint32_t qwords = (sizeBytes + 15u) / 16u;
+        std::vector<uint8_t> packet(16u * (1u + 4u + 1u) + qwords * 16u, 0u);
+        auto put64 = [&](size_t offset, uint64_t value) { std::memcpy(packet.data() + offset, &value, 8u); };
+        put64(0, 4ull | (1ull << 60));              // NLOOP=4, PACKED, NREG=1
+        put64(8, 0x0Eull);                          // REGS: A+D
+        const uint64_t setup[4][2] = {{bitbltbuf, GS_REG_BITBLTBUF}, {trxpos, GS_REG_TRXPOS},
+                                      {trxreg, GS_REG_TRXREG}, {trxdir, GS_REG_TRXDIR}};
+        for (size_t i = 0; i < 4; ++i)
+        {
+            put64(16 + i * 16, setup[i][0]);
+            put64(24 + i * 16, setup[i][1]);
+        }
+        put64(80, uint64_t(qwords) | (1ull << 15) | (2ull << 58)); // NLOOP, EOP, IMAGE
+        std::memcpy(packet.data() + 96, data, sizeBytes);
+        m_backend->RawGifPacket(3u, packet.data(), static_cast<uint32_t>(packet.size()));
+    }
+
     uploadImageNativeUnlocked(bitbltbuf, trxpos, trxreg, trxdir, data, sizeBytes);
 }
 
@@ -1064,6 +1091,8 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
 void GS::writeRegister(uint8_t regAddr, uint64_t value)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    if (m_backend && m_backend->WantsRawGif())
+        m_backend->RawRegisterWrite(regAddr, value);
     writeRegisterUnlocked(regAddr, value);
 }
 
@@ -1664,6 +1693,7 @@ void GS::setRasterBackend(std::unique_ptr<GSRasterBackend> backend)
     }
 
     m_backend = std::move(backend);
+    m_backend->SetPrivilegedRegisters(m_privRegs);
     m_backend->Initialize(m_localMemoryStorage, m_localMemorySize);
 }
 

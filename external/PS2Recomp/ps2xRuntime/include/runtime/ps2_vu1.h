@@ -227,6 +227,9 @@ private:
     uint64_t m_cycle = 0;
     uint64_t m_nextWriteSequence = 0;
     uint64_t m_efuResourceReady = 0;
+    // Earliest readyCycle among pending pipeline entries; commitReadyPipelines() returns
+    // immediately before it. 0 forces a scan (after reset).
+    uint64_t m_nextCommitCycle = 0;
     uint32_t m_workingClip = 0;
     uint32_t m_currentUpperInstruction = 0;
     int32_t m_viBranchBackupValue = 0;

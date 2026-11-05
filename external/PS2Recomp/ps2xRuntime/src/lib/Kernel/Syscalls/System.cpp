@@ -17,6 +17,12 @@ namespace ps2_syscalls
                 ((static_cast<uint64_t>(frameMode) & 0x1ull) << 1);
 
             gs.smode2 = smode2;
+            // SMODE1 as the BIOS programs it (PCSX2 SetGsCrt): NTSC (mode 2) LC=32 CMOD=2,
+            // PAL (mode 3) LC=32 CMOD=3. GPU scanout derives the video timing from it.
+            if (videoMode == 3)
+                gs.smode1 = 0x740836504ull;
+            else if (videoMode == 2)
+                gs.smode1 = 0x740834504ull;
 
             // Keep CRT1 enabled after the BIOS syscall selects a display mode.
             if ((gs.pmode & 0x3ull) == 0ull)

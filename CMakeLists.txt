@@ -30,6 +30,20 @@ set(PS2X_ENABLE_SCCACHE OFF CACHE BOOL "" FORCE)
 # boot here). Keep it opt-in for call-level debugging only.
 option(DRAKENGARD_TRACE_CALLS "Log every guest function entry/exit to ps2_log.txt (very slow)" OFF)
 set(PS2X_ENABLE_AGRESSIVE_LOGS ${DRAKENGARD_TRACE_CALLS} CACHE BOOL "" FORCE)
+# GPU GS renderer: paraLLEl-GS (Vulkan compute, LGPL-3.0+), a git submodule. When present,
+# PS2Recomp's runtime builds its GSParallelBackend and uses it unless PS2X_GS_RENDERER=cpu.
+option(DRAKENGARD_GPU_GS "Build the Vulkan GS renderer (paraLLEl-GS)" ON)
+if(DRAKENGARD_GPU_GS)
+    if(NOT EXISTS "${CMAKE_SOURCE_DIR}/external/parallel-gs/Granite/CMakeLists.txt")
+        message(FATAL_ERROR
+            "external/parallel-gs is not checked out. Run:\n"
+            "  git submodule update --init external/parallel-gs\n"
+            "  (cd external/parallel-gs && bash checkout_submodules.sh)\n"
+            "or configure with -DDRAKENGARD_GPU_GS=OFF for the CPU renderer only.")
+    endif()
+    set(PARALLEL_GS_STANDALONE ON CACHE BOOL "" FORCE)
+    add_subdirectory(external/parallel-gs EXCLUDE_FROM_ALL)
+endif()
 add_subdirectory(external/PS2Recomp EXCLUDE_FROM_ALL)
 if(NOT MSVC)
     # Line tables for the runtime (not the generated code) so tools/profile_report.py
