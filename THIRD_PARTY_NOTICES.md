@@ -44,5 +44,26 @@ Pulled by PS2Recomp's CMake (`FetchContent`) into `build/_deps`:
 
 ## References used (not included)
 
+- **Drakengard1Recompile** by k1gs (MIT, <https://github.com/k1gs/Drakengard1Recompile>,
+  revision `6186ea6`, read 2026-11-05) — a PAL (SLES-52322) recompilation on the same PS2Recomp.
+  Its findings and patch designs informed session-4 runtime fixes (64-bit REGIMM/BLEZ/BGTZ
+  branches, VF0 write discard, VIF0 UNPACK formats, toSPR chain / VU0-source DMA, empty GIF
+  chains, INT+FFMD scanout, T8/CT32 CLUT fast path, vectorised bilinear filter). The code here
+  was rewritten against our vendored PS2Recomp; the toSPR chain walk follows its
+  `ee_spr_chain.h` closely, so its notice applies:
+
+  > MIT License — Copyright (c) 2026 k1gs. Permission is hereby granted, free of charge, to any
+  > person obtaining a copy of this software and associated documentation files (the
+  > "Software"), to deal in the Software without restriction, including without limitation the
+  > rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+  > the Software, and to permit persons to whom the Software is furnished to do so, subject to
+  > the following conditions: The above copyright notice and this permission notice shall be
+  > included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED
+  > "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+  > WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO
+  > EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  > LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+  > CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 - PCSX2 (GPL-3.0) — behavioural reference and game database facts only.
 - Bloodborne PC by Supermedo (GPL-2.0) — product reference only; no code used.

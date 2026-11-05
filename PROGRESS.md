@@ -6,8 +6,8 @@
 |---|---|---|
 | A — Inspection and feasibility | **done** | RESEARCH.md: build identity, disc inventory, ELF layout, ISA census, tool audit, architecture choice |
 | B — Native execution foundation | **done** | 8,315 functions translated (0 decode failures); `DrakengardPC.exe` executes original game code through IOP init, disc search and interrupt setup into the frame loop (logs below) |
-| C — Boot and title screen | **reached, with known issues** | Square Enix → Cavia → Project Dragonsphere logos → title "PRESS START BUTTON"; scripted input opens the main menu and the New Game difficulty prompt (session 2). Known issues: game runs at ~38% speed, window shows both interlaced field buffers, no audio |
-| D — Playable vertical slice | in progress | New Game → prologue → Chapter 1 → briefing → loading → first mission starts rendering (VU1 + GS), but at ~0.2 VSync/s |
+| C — Boot and title screen | **reached, with known issues** | Square Enix → Cavia → Project Dragonsphere logos → title "PRESS START BUTTON"; scripted input opens the main menu and the New Game difficulty prompt (session 2). Known issues: game runs at ~38% speed, no audio (interlaced presentation fixed in session 4) |
+| D — Playable vertical slice | in progress | New Game → prologue → Chapter 1 → briefing → first mission intro (HUD, radio message, objective map, hint) at ~2 VSync/s; 3D ground renders as a flat grey area and Caim is not visible yet |
 | E — Compatibility and timing | not started | timing architecture sketched in ARCHITECTURE.md |
 | F — Modern rendering and mods | not started | |
 | G — Complete-game verification | not started | |
@@ -159,22 +159,74 @@ dark scene with a faint circular HUD element fades in (tick ~3267), but game tim
 
 Tests: PS2Recomp `ps2x_tests` 448/448; pipeline tests 6/6; `tools/boot_test.py` 4/4 checks.
 
+### 2026-11-05 — session 4 (fixes ported from k1gs/Drakengard1Recompile)
+
+Reviewed k1gs/Drakengard1Recompile (MIT; PAL SLES-52322 on PS2Recomp `eb8688b2`, one commit
+behind ours; see RESEARCH.md "Existing community work"). Its game addresses do not apply to our
+ELF, but its PS2Recomp fixes do. Each was checked against our vendored copy, rewritten in place
+(not as build-time text patches) and given a regression test:
+
+- **64-bit signed branches.** BLTZ/BGEZ/BLEZ/BGTZ (+likely/link forms) were emitted as
+  `GPR_S32(...) op 0`; the R5900 tests the 64-bit register. 2,710 sites in our code, now
+  `GPR_S64`.
+- **VU0 macro MAC flags and VF0.** Macro-mode FMAC instructions never updated MAC/status
+  flags, and writes to VF0 (the constant (0,0,0,1)) were stored. The game's visibility/clip
+  test is `vsub.xyzw vf0, a, b; cfc2 $vi17` (e.g. `0x1CB7BC`/`0x1CB7D4`, sign bits `& 0xE0`),
+  so it read stale flags and its next VF0 reads saw garbage. The translator now inserts
+  `PS2_VU0_SET_MAC` (Z/S/O per lane, sticky status bits) for ADD/SUB/MUL/MADD/MSUB/OPMSUB and
+  their bc/q/i/ACC forms (7,920 sites) and drops every VF0 store (114 macro sites + 1 LQC2)
+  while still evaluating the value. The VU interpreter's `applyDest` also discards VF0 writes so
+  a paired lower instruction cannot read a transient value. U (underflow) is not reported:
+  results arrive already flushed by `ps2_vfinish`.
+- **VIF0 UNPACK.** Only V*-32 was decoded; 16-, 8- and 5-bit formats were skipped and the
+  address used VIF1's mask and TOPS. One shared decoder now serves VIF0 (256-QW mask, absolute
+  address) and VIF1. Its V4-5 expansion was also wrong in VIF1 (5-bit values were not shifted to
+  8 bits, PCSX2 `UNPACK_V4_5`).
+- **Scratchpad DMA.** toSPR from VU0 data memory (`0x11004000`) and toSPR source-chain mode
+  were refused silently; both are implemented. Remaining unsupported cases log
+  `[spr-dma:unsupported]`.
+- **Empty GIF/VIF chains** now end the transfer and raise the channel interrupt.
+- **INT+FFMD presentation.** With SMODE2 = INT|FFMD the framebuffer holds one field, so the
+  display reads half the lines and line-doubles them. Upstream read the full height, which is
+  why both field buffers appeared stacked.
+- **GS speed.** T8/CT32/CSA0 texels read the CLUT directly; the bilinear filter does four
+  channels with SSE2.
+
+**Result (run 48, same scripted input as session 3, AVX2 build).** The first mission is
+reached at ~300 s host time (540 s before) and runs at ~2 VSync/s (was ~0.2; VU1 interpreter
+now ~70% of the guest thread, GS ~40%). The mission intro now plays: dragon silhouette during
+the fade-in, full HUD (health and magic gauges, radar, combo counter), the radio message
+"Lord Caim! The Empire has surrounded the castle!" with portrait, the objective map ("The
+goddess Furiae's castle is surrounded. Kill the commanders marked with the TARGET symbol…",
+enemy markers) and the R3 map hint (run 49). The window shows one 448-line image (no stacked
+field buffers). No `[spr-dma:unsupported]` lines in either run.
+
+**Still wrong in the 3D scene.** Below the horizon most of the view is a flat grey-brown
+area; walls and distant terrain above it are textured. Caim is not visible. Run 49 with the
+new `PS2X_GS_DEBUG_NOFOG=1` shows the same area, so it is not the fog blend. Not yet
+diagnosed (candidates: VU1 microprogram output, GS depth/alpha test, texture state). The last
+display line has scattered coloured pixels. Movement/attack input was not exercised: the
+script pressed it while the objective map and hint were up.
+
+Tests: PS2Recomp `ps2x_tests` 455/455 (7 new); pipeline tests 6/6.
+
 ## Main blockers
 
-1. **Speed is now the gate**: in the first mission the game runs at ~0.2 VSync/s (software GS
-   ~82% and VU1 interpreter ~16% of the guest thread); at the title ~16 VSync/s. Needs the GS
-   off the guest thread (asynchronous, as PCSX2's MTGS) and then the hardware renderer, plus
-   faster VU1 (ahead-of-time translation of the fixed microprogram set).
+1. **3D scene correctness**: in the first mission the ground is a flat grey area and Caim is
+   not drawn (not fog; see session 4). Blocks verifying gameplay.
+2. **Speed**: the first mission runs at ~2 VSync/s (VU1 interpreter ~70%, software GS ~40%
+   of the guest thread); the title ~16-20 VSync/s. Needs faster VU1 (ahead-of-time translation
+   of the fixed microprogram set), the GS off the guest thread, then the hardware renderer.
 3. **Timing catch-up**: after long stalls the scheduler delivered missed VBlanks back to back
    (~187 VSync/s once); VBlank pacing should resynchronise to wall time.
-4. **Presentation**: both interlaced field buffers are shown.
-5. **Audio**: none reaches the host.
+4. **Audio**: none reaches the host.
 
 ## Next actions
 
-1. Asynchronous GS: queue GIF packets to a GS thread; synchronise on FINISH/SIGNAL, VRAM
-   readback, and presentation. Measure with `[run:sample]` / `DKG_PROFILE` in the mission.
-2. Profile the mission scene (VU1 programs, primitive counts) to size the hardware-renderer
-   and VU1 ahead-of-time work.
-3. Resynchronise VBlank deadlines after stalls.
-4. Crop/merge interlaced output; then audio (EzSound on the IOP → host mixer).
+1. Diagnose the grey ground / missing Caim: dump one mission frame's GS draws (PRIM, TEX0,
+   TEST, ZBUF, vertex ranges) and compare against PCSX2's GS dump of the same scene.
+2. Extend the pad script past the hint (✕) and drive movement/attack to reach control.
+3. Profile VU1 in the mission; plan ahead-of-time translation of its microprograms, then the
+   asynchronous GS (queue GIF packets; sync on FINISH/SIGNAL, readback, presentation).
+4. Resynchronise VBlank deadlines after stalls.
+5. Audio (EzSound on the IOP → host mixer).

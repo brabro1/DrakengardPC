@@ -112,7 +112,12 @@ failures, 0 unhandled instructions).
   `sceVu0ViewScreenMatrix` (`0x2FCFD0`), which gives a native hook point for widescreen.
   Its no-interlace codes write `0x4F2668/74/84` (display setup data).
 - No Drakengard-specific recompilation, decompilation or file-format tooling was found
-  (searches of GitHub, PS2Recomp issues, web). TCRF page: <https://tcrf.net/Drakengard>.
+  in session 1 (searches of GitHub, PS2Recomp issues, web). Since then (seen 2026-11-05):
+  **k1gs/Drakengard1Recompile** (MIT), a PAL SLES-52322 recompilation on PS2Recomp
+  `eb8688b2` (one commit behind ours). It patches PS2Recomp at configure time and also
+  translates a BIOS kernel/firmware (needs a BIOS dump, unlike this project). By 2026-11-01 it
+  reported Caim, terrain, HUD, analog movement and a melee animation in the first mission.
+  It independently found our two session-3 FPU fixes. PAL addresses do not apply to our ELF. TCRF page: <https://tcrf.net/Drakengard>.
 - PCSX2 wiki reports the game is playable; rare slowdowns in aerial missions:
   <https://wiki.pcsx2.net/Drakengard>.
 

@@ -20,7 +20,7 @@ Tested setup: Windows 11 Pro 26300, i5-12400F, RTX 3060, Drakengard (USA) SLUS-2
 | Title screen | verified | reached at VSync tick ~1093 (≈110 s host time) |
 | Main menu and New Game difficulty prompt | verified | via scripted input |
 | Starting a new game | verified | prologue text, "Chapter 1 — Beginnings", mission briefing (session 3) |
-| First mission (ground combat) | implemented, not verifiable yet | loads and starts rendering; runs at ~0.2 VSync/s |
+| First mission (ground combat) | implemented, not verifiable yet | intro, HUD and objective map render at ~2 VSync/s; ground and Caim not drawn correctly yet |
 | Ground combat, dragon flight, story, endings | planned | |
 | Audio (EzSound on IOP → host audio) | planned | driver runs on IOP; no output path |
 | FMV playback (IPU MPEG-2) | planned | FFmpeg linked; untested |
@@ -31,7 +31,7 @@ Tested setup: Windows 11 Pro 26300, i5-12400F, RTX 3060, Drakengard (USA) SLUS-2
 
 | Feature | State | Notes |
 |---|---|---|
-| Windowed output (640×448, software GS) | implemented | correctness reference only |
+| Windowed output (640×448, software GS) | implemented | correctness reference only; interlaced field framebuffers line-doubled (session 4) |
 | Higher internal resolution (1080p/1440p/4K) | planned | needs hardware GS renderer |
 | Separate internal/output resolution | planned | |
 | Widescreen / ultrawide | planned | hook point identified: `sceVu0ViewScreenMatrix` (`0x2FCFD0`) |

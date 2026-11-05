@@ -38,7 +38,10 @@ rebuilds everything — prefer new headers or `.cpp` changes in the runtime.
   with `work/recomp/funcmap_named.csv` and read code in `work/recomp/disasm.txt`
   (build it with `python -I tools/disasm_listing.py work/recomp/generated work/recomp/disasm.txt`).
 - `[irq:add]`, `[gs:irq]`, `[sceCdSearchFile:ok]` are the key boot diagnostics.
-- `PS2X_FRAME_DUMP_DIR=work/frames` saves presented frames.
+- `PS2X_FRAME_DUMP_DIR=work/frames` saves presented frames. `PS2X_GS_DEBUG_NOFOG=1` disables fog.
+- Mission script (reaches the objective map/hint, first mission ~300 s):
+  `1300:start:10,1600:cross:10,1800:left:10,1950:cross:10,2400:cross:10,2700:cross:10,3000:cross:10,3300:start:10`.
+- k1gs/Drakengard1Recompile (PAL, MIT) is a useful cross-check for runtime bugs; see RESEARCH.md.
 - PCSX2 2.7 at `D:\ps2\pcsx2-v2.7.346-windows-x64-Qt` is the behavioural reference.
 - `[run:sample]` (every 300 host frames) gives pc/ra/VSync tick in any build.
 - `DKG_TRACE_FUNCS=0x2f11e4,... DKG_TRACE_MEM=0x5089c0,... DKG_TRACE_SKIP=N DKG_TRACE_LIMIT=N`

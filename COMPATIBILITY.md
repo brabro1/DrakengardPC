@@ -28,9 +28,11 @@ Addresses, function maps and overrides are specific to the supported ELF.
 | 2026-11-03 | Prologue → Chapter 1 → mission briefing → Continue (scripted ✕/Start) | pass | session 3, run 43 |
 | 2026-11-03 | First mission load | fail — stuck on "NOW LOADING…" (comb sort never ends: `cvt.w.s` rounded instead of truncating) | session 3, run 44 |
 | 2026-11-03 | First mission load after `cvt.w.s` fix | partial — loads, scene fades in with VU1 rendering; ~0.2 VSync/s | session 3, run 47 |
+| 2026-11-05 | First mission intro after session-4 runtime fixes | partial — HUD, radio message, objective map and hint render; ~2 VSync/s; ground drawn as flat grey, Caim not visible | session 4, runs 48–49 |
+| 2026-11-05 | Interlaced presentation (SMODE2 INT+FFMD) | pass — single 448-line image | session 4, run 48 |
 
 ## Host
 
 | Machine | OS | CPU | GPU | Result |
 |---|---|---|---|---|
-| reference | Windows 11 Pro 26300 | i5-12400F | RTX 3060 (32.0.16.2101) | builds; boots through the title, menus, prologue and briefing to the first loading screen |
+| reference | Windows 11 Pro 26300 | i5-12400F | RTX 3060 (32.0.16.2101) | builds; boots through the title, menus, prologue and briefing into the first mission's intro |

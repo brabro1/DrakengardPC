@@ -21,10 +21,11 @@ What is verified on the reference machine (see [PROGRESS.md](PROGRESS.md)):
   frame/task loop, shows the Square Enix, Cavia and Project Dragonsphere logos, and reaches
   the **title screen**. Controller input works (the game switches the virtual DualShock 2
   to analog + pressure mode). New Game plays the prologue, "Chapter 1 — Beginnings" and the
-  mission briefing, loads, and starts rendering the first mission (VU1 + GS).
-- **Not yet**: playable speed (the first mission runs at ~0.2 VSync/s because the GS is a
-  single-threaded software rasteriser), correct interlaced presentation, audio, movies,
-  saves. There is no playable gameplay. See [PROGRESS.md](PROGRESS.md) for the blockers.
+  mission briefing, loads, and plays the first mission's intro (HUD, radio message,
+  objective map).
+- **Not yet**: a correct 3D scene in the mission (the ground is drawn as a flat grey area
+  and Caim is not visible), playable speed (~2 VSync/s in the mission: interpreted VU1 and a
+  single-threaded software GS), audio, movies, saves. There is no playable gameplay. See [PROGRESS.md](PROGRESS.md) for the blockers.
 
 ## Requirements
 
@@ -79,6 +80,7 @@ Tab = Select, Q/E = L1/R1, Shift = L2/R2. A connected gamepad is used instead wh
 Options: `--max-seconds N` exits after N seconds (automated boot tests). Environment:
 `PS2X_FRAME_DUMP_DIR=<dir>` (and `PS2X_FRAME_DUMP_EVERY=N`) saves presented frames as PNG;
 `PS2X_PAD_SCRIPT="1300:start:10,1600:cross:10"` presses buttons at given VSync ticks;
+`PS2X_GS_DEBUG_NOFOG=1` ignores the GS fog enable (diagnostic);
 `DKG_TRACE_FUNCS=0xADDR,...` (with `DKG_TRACE_MEM`, `DKG_TRACE_SKIP`, `DKG_TRACE_LIMIT`)
 logs calls to recompiled functions; `DKG_PROFILE=<file>` writes a sampling profile
 (summarise with `tools/profile_report.py`).
