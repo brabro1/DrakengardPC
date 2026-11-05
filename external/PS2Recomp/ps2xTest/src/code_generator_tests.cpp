@@ -1389,6 +1389,18 @@ void register_code_generator_tests()
             const std::string mov = gen.translateInstruction(qmtc2);
             t.IsTrue(mov.find("ctx->vu0_vf[0] = ") == std::string::npos, "QMTC2 to VF0 must not store");
 
+            // vclipw.xyz vf10, vf3w: +x is bit 0, -x bit 1, compared against |w|.
+            Instruction clip = make(0x3C, 0, 0xE);
+            clip.rd = 10;
+            clip.rt = 3;
+            clip.function = 0x3F; // Special2 table, low bits 3
+            clip.raw = ((VU0_S2_VCLIPw >> 2) << 6) | (VU0_S2_VCLIPw & 3u);
+            const std::string clipCode = gen.translateInstruction(clip);
+            t.IsTrue(clipCode.find("((gt_mask & 0x1) << 0) | ((lt_mask & 0x1) << 1)") != std::string::npos,
+                     "VCLIP puts +x in bit 0 and -x in bit 1");
+            t.IsTrue(clipCode.find("_mm_set1_epi32(0x7FFFFFFF)") != std::string::npos,
+                     "VCLIP compares against |w|");
+
             Instruction lqc2{};
             lqc2.opcode = OPCODE_LQC2;
             lqc2.rs = 17;

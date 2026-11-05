@@ -1,6 +1,9 @@
 // Based on Blackline Interactive implementation
 #include "runtime/ps2_memory.h"
 #include <cstring>
+#include <algorithm>
+#include <cstdlib>
+#include <cstdio>
 
 enum VIFCmd : uint8_t
 {
@@ -87,6 +90,29 @@ namespace
             vuAddr = (vuAddr + (regs.tops & 0x3FFu)) & addrMask;
 
         const bool zeroExtend = (imm & 0x4000u) != 0u;
+
+        // Diagnostic: PS2X_VIF_WATCH=<qword> logs every UNPACK whose destination covers it.
+        static const long s_watch = []
+        {
+            const char *value = std::getenv("PS2X_VIF_WATCH");
+            return value ? std::strtol(value, nullptr, 0) : -1L;
+        }();
+        if (s_watch >= 0)
+        {
+            const uint32_t span = (cl >= wl) ? ((writeVectorCount + wl - 1u) / wl) * cl : writeVectorCount;
+            const uint32_t w = static_cast<uint32_t>(s_watch);
+            const uint32_t rel = (w - vuAddr) & addrMask;
+            if (rel < span)
+            {
+                uint32_t first[4] = {};
+                std::memcpy(first, data, std::min<uint32_t>(16u, available));
+                std::fprintf(stderr, "[vif:watch] vif%u qw %u unpack op %02x num %u imm %04x addr %u tops %u cl %u wl %u mode %u mask %08x row %08x %08x %08x %08x complete %u data %08x %08x %08x %08x\n",
+                             addrMask == 0x3FFu ? 1u : 0u, w, opcode, writeVectorCount, imm, vuAddr, regs.tops, cl, wl,
+                             regs.mode, regs.mask, regs.row[0], regs.row[1], regs.row[2], regs.row[3],
+                             (vuData && totalBytes != 0u && totalBytes <= available) ? 1u : 0u,
+                             first[0], first[1], first[2], first[3]);
+            }
+        }
         if (!vuData || totalBytes == 0u || totalBytes > available)
             return totalBytes;
 

@@ -1,4 +1,5 @@
 #include "runtime/gs/gs_cpu_backend.h"
+#include "runtime/gs/gs_draw_log.h"
 #include "runtime/gs/ps2_gs_common.h"
 #include "runtime/gs/ps2_gs_psmct16.h"
 #include "runtime/gs/ps2_gs_psmct32.h"
@@ -561,12 +562,141 @@ void GSCpuBackend::ResetUnlocked()
     m_localToHostReadPos = 0u;
 }
 
+
+namespace
+{
+    // See runtime/gs/gs_draw_log.h. Accessed only under GSCpuBackend::m_mutex.
+    struct GsDrawLog
+    {
+        bool configured = false;
+        bool active = false;
+        uint64_t first = 0, last = 0;
+        FILE *out = nullptr;
+        int probeX = -1, probeY = -1;
+        uint64_t drawIndex = 0;
+        uint64_t tick = 0;
+        uint32_t enter = 0, scissor = 0, alphaFail = 0, destAlphaFail = 0, depthFail = 0, frameWrite = 0, depthWrite = 0;
+        int minX = 0, minY = 0, maxX = -1, maxY = -1;
+
+        GsDrawLog()
+        {
+            const char *spec = std::getenv("PS2X_GS_DRAW_LOG");
+            if (!spec)
+                return;
+            unsigned long long a = 0, b = 0;
+            char path[512] = {};
+            if (std::sscanf(spec, "%llu:%llu:%511[^\n]", &a, &b, path) != 3)
+            {
+                std::cerr << "[gs:drawlog] bad PS2X_GS_DRAW_LOG (want first:last:path)" << std::endl;
+                return;
+            }
+            out = std::fopen(path, "w");
+            if (!out)
+            {
+                std::cerr << "[gs:drawlog] cannot open " << path << std::endl;
+                return;
+            }
+            first = a;
+            last = b;
+            if (const char *probe = std::getenv("PS2X_GS_PROBE"))
+                std::sscanf(probe, "%d,%d", &probeX, &probeY);
+            configured = true;
+            ps2x::gsdebug::g_adcSkipHook = &GsDrawLog::logSkipped;
+            std::cerr << "[gs:drawlog] ticks " << first << ".." << last << " -> " << path
+                      << " probe=" << probeX << "," << probeY << std::endl;
+        }
+
+        void resetCounters()
+        {
+            enter = scissor = alphaFail = destAlphaFail = depthFail = frameWrite = depthWrite = 0;
+            minX = minY = 1 << 30;
+            maxX = maxY = -1;
+        }
+
+        void noteWrite(int x, int y)
+        {
+            minX = std::min(minX, x);
+            minY = std::min(minY, y);
+            maxX = std::max(maxX, x);
+            maxY = std::max(maxY, y);
+        }
+
+        static void logSkipped(const GSPrimitiveBatch &batch);
+
+        bool probing(int x, int y) const
+        {
+            return active && x == probeX && y == probeY;
+        }
+    };
+
+    GsDrawLog &gsDrawLog()
+    {
+        static GsDrawLog log;
+        return log;
+    }
+
+    void GsDrawLog::logSkipped(const GSPrimitiveBatch &batch)
+    {
+        GsDrawLog &log = gsDrawLog();
+        const uint64_t tick = ps2x::gsdebug::g_vsyncTick.load(std::memory_order_relaxed);
+        if (!log.out || tick < log.first || tick > log.last)
+            return;
+        const GSContext &c = batch.state.context;
+        std::fprintf(log.out, "adcskip after-draw %llu prim %u fbp %u xyoff %u %u nv %u\n",
+                     static_cast<unsigned long long>(log.drawIndex), static_cast<unsigned>(batch.state.prim.type),
+                     c.frame.fbp, c.xyoffset.ofx, c.xyoffset.ofy, static_cast<unsigned>(batch.vertexCount));
+        for (uint32_t i = 0; i < batch.vertexCount; ++i)
+        {
+            const GSVertex &v = batch.vertices[i];
+            std::fprintf(log.out, "  v%u xy %.2f %.2f z %.0f rgba %u %u %u %u stq %g %g %g uv %u %u fog %u\n",
+                         i, v.x, v.y, v.z, v.r, v.g, v.b, v.a, v.s, v.t, v.q, v.u, v.v, v.fog);
+        }
+    }
+}
+
 void GSCpuBackend::Submit(const GSPrimitiveBatch &batch)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (!m_vram || batch.vertexCount == 0u)
         return;
+    GsDrawLog &log = gsDrawLog();
+    if (log.configured)
+    {
+        log.tick = ps2x::gsdebug::g_vsyncTick.load(std::memory_order_relaxed);
+        log.active = log.tick >= log.first && log.tick <= log.last;
+    }
+    if (!log.active)
+    {
+        DrawPrimitive(batch);
+        return;
+    }
+    ++log.drawIndex;
+    log.resetCounters();
     DrawPrimitive(batch);
+    const GSDrawState &s = batch.state;
+    const GSContext &c = s.context;
+    std::fprintf(log.out,
+                 "draw %llu tick %llu prim %u ctxt %u iip %u tme %u fge %u abe %u fst %u nv %u | "
+                 "frame fbp %u fbw %u psm %02x fbmsk %08x | zbuf zbp %u psm %02x zmsk %u | test %llx alpha %llx fba %llx pabe %u | "
+                 "tex0 tbp %u tbw %u psm %02x tw %u th %u tcc %u tfx %u cbp %u cpsm %02x csa %u | tex1 %llx clamp %llx | "
+                 "xyoff %u %u scissor %u %u %u %u | fogcol %u %u %u | px in %u scis %u afail %u dafail %u zfail %u fw %u zw %u bbox %d %d %d %d\n",
+                 static_cast<unsigned long long>(log.drawIndex), static_cast<unsigned long long>(log.tick),
+                 static_cast<unsigned>(s.prim.type), s.prim.ctxt, s.prim.iip, s.prim.tme, s.prim.fge, s.prim.abe, s.prim.fst,
+                 static_cast<unsigned>(batch.vertexCount),
+                 c.frame.fbp, c.frame.fbw, c.frame.psm, c.frame.fbmsk, c.zbuf.zbp, c.zbuf.psm, c.zbuf.zmask ? 1u : 0u,
+                 static_cast<unsigned long long>(c.test), static_cast<unsigned long long>(c.alpha), static_cast<unsigned long long>(c.fba), s.pabe ? 1u : 0u,
+                 c.tex0.tbp0, c.tex0.tbw, c.tex0.psm, c.tex0.tw, c.tex0.th, c.tex0.tcc, c.tex0.tfx, c.tex0.cbp, c.tex0.cpsm, c.tex0.csa,
+                 static_cast<unsigned long long>(c.tex1), static_cast<unsigned long long>(c.clamp),
+                 c.xyoffset.ofx, c.xyoffset.ofy, c.scissor.x0, c.scissor.x1, c.scissor.y0, c.scissor.y1,
+                 s.fogR, s.fogG, s.fogB,
+                 log.enter, log.scissor, log.alphaFail, log.destAlphaFail, log.depthFail, log.frameWrite, log.depthWrite,
+                 log.minX, log.minY, log.maxX, log.maxY);
+    for (uint32_t i = 0; i < batch.vertexCount; ++i)
+    {
+        const GSVertex &v = batch.vertices[i];
+        std::fprintf(log.out, "  v%u xy %.2f %.2f z %.0f rgba %u %u %u %u stq %g %g %g uv %u %u fog %u\n",
+                     i, v.x, v.y, v.z, v.r, v.g, v.b, v.a, v.s, v.t, v.q, v.u, v.v, v.fog);
+    }
 }
 
 void GSCpuBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
@@ -867,8 +997,23 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
 void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint8_t fog)
 {
     const auto &ctx = state.context;
+    GsDrawLog &log = gsDrawLog();
+    const bool logging = log.active;
+    const bool probe = log.probing(x, y);
+    auto probeNote = [&](const char *what, uint32_t detail)
+    {
+        if (probe)
+            std::fprintf(log.out, "  probe draw %llu (%d,%d) rgba %u %u %u %u z %d fog %u -> %s %08x\n",
+                         static_cast<unsigned long long>(log.drawIndex), x, y, r, g, b, a, z, fog, what, detail);
+    };
+    if (logging)
+        ++log.enter;
     if (x < ctx.scissor.x0 || x > ctx.scissor.x1 || y < ctx.scissor.y0 || y > ctx.scissor.y1)
+    {
+        if (logging)
+            ++log.scissor;
         return;
+    }
 
     // Diagnostic: PS2X_GS_DEBUG_NOFOG=1 ignores PRIM.FGE (isolates fog-coefficient problems).
     static const bool s_debugNoFog = []
@@ -901,6 +1046,9 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
     const PixelWriteMask writeMask = classifyAlphaTest(ctx.test, a, static_cast<uint8_t>(fpsm));
     if (!writeMask.writesAnything())
     {
+        if (logging)
+            ++log.alphaFail;
+        probeNote("alpha-test fail", static_cast<uint32_t>(ctx.test));
         return;
     }
 
@@ -933,6 +1081,9 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
 
     if (!passesDestinationAlphaTest(ctx.test, static_cast<uint8_t>(fpsm), rawFramebufferPixel))
     {
+        if (logging)
+            ++log.destAlphaFail;
+        probeNote("dest-alpha fail", rawFramebufferPixel);
         return;
     }
 
@@ -958,6 +1109,9 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
 
     if (!zpass)
     {
+        if (logging)
+            ++log.depthFail;
+        probeNote("depth fail, stored z", storedZ);
         return;
     }
 
@@ -1031,11 +1185,19 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
         }
 
         WriteVramUnlocked(fpsm, fbp, fbw, x, y, pixel);
+        if (logging)
+        {
+            ++log.frameWrite;
+            log.noteWrite(x, y);
+        }
+        probeNote("frame write", pixel);
     }
 
     if (writeMask.writeDepth && !ctx.zbuf.zmask)
     {
         WriteVramUnlocked(zpsm, zbp, fbw, x, y, z);
+        if (logging)
+            ++log.depthWrite;
     }
 }
 

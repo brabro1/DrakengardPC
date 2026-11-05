@@ -89,8 +89,11 @@ def main() -> int:
     # code that the recompiler translates exactly (PS2 float rules included); the
     # runtime's native replacements use host float math and at least one has a
     # disputed operand order (upstream issue #361). Drakengard's visibility culling
-    # runs through sceVu0ApplyMatrix and friends.
-    guest_prefixes = ("sceVu0",)
+    # runs through sceVu0ApplyMatrix and friends. The library's internal helpers
+    # (_sceVu0ecossin) use a private register convention (angle in vf6.x, cos/sin in
+    # vf4.xy, vf5 zeroed) that a C-ABI stub cannot honour: the native stub wrote {cos, sin} over
+    # the caller's matrix and left vf4/vf5 stale, corrupting every rotation matrix.
+    guest_prefixes = ("sceVu0", "_sceVu0")
     # ps2_recomp binds runtime handlers by function name as well as by selector, so
     # these functions are renamed with a guest_ prefix in the map and selectors.
     moved = [s for s in kept["stubs"] if selector_split(s)[0].startswith(guest_prefixes)]

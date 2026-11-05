@@ -77,6 +77,20 @@ class Recompile(unittest.TestCase):
         self.assertIn("Recompilation completed successfully", text)
 
 
+class NativeStubs(unittest.TestCase):
+    def test_libvu0_is_guest_code(self):
+        """No libvu0 function (public or internal) may be bound to a native stub: the
+        library's helpers pass values in VU0 registers that C-ABI stubs ignore."""
+        cfg = os.path.join(WORK, "recomp", "drakengard.toml")
+        need(cfg)
+        with open(cfg, encoding="utf-8") as f:
+            text = f.read()
+        m = re.search(r"stubs\s*=\s*\[(.*?)\]", text, re.S)
+        self.assertIsNotNone(m)
+        stubs = re.findall(r'"([^"@]+)@', m.group(1))
+        self.assertEqual([s for s in stubs if "sceVu0" in s], [])
+
+
 class Sha1Parity(unittest.TestCase):
     """The host's verifier (src/game_identity.cpp) must agree with hashlib; this pins the
     expected digest of a fixed vector so a C++ change can be checked by the boot log."""

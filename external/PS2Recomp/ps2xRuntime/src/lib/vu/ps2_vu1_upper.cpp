@@ -1,3 +1,6 @@
+#include <string>
+#include "ps2_vu_clip_trace.h"
+#include <cstdlib>
 #include "runtime/ps2_vu1.h"
 #include "ps2_vu1_detail.h"
 
@@ -411,6 +414,47 @@ void VU1Interpreter::execUpper(uint32_t instr)
                 flags |= 0x10u;
             if (exceedsClipPlane(m_state.vf[fs][2], 0x80000000u))
                 flags |= 0x20u;
+            static const bool s_debugNoClip = []
+            {
+                const char *value = std::getenv("PS2X_VU1_DEBUG_NO_CLIP");
+                return value && value[0] == '1';
+            }();
+            if (s_debugNoClip)
+                flags = 0u;
+            vuClipTrace(m_unit == Unit::VU1 ? 1u : 0u, m_state.pc, "CLIP", fs, ft, m_state.vf[fs], m_state.vf[ft][3], flags);
+            // Diagnostic: PS2X_VU_DUMP=<pc hex>:<dir> dumps VU code/data/registers at the first
+            // CLIP executed at that pc (VU1 only).
+            static const char *s_dumpSpec = std::getenv("PS2X_VU_DUMP");
+            static bool s_dumped = false;
+            if (s_dumpSpec && !s_dumped && m_unit == Unit::VU1 &&
+                m_state.pc == static_cast<uint32_t>(std::strtoul(s_dumpSpec, nullptr, 16)))
+            {
+                s_dumped = true;
+                const char *dir = std::strchr(s_dumpSpec, ':');
+                if (dir && m_cachedVuCode && m_activeVuData)
+                {
+                    const std::string base = std::string(dir + 1) + "/vu1_";
+                    if (FILE *f = std::fopen((base + "code.bin").c_str(), "wb"))
+                    {
+                        std::fwrite(m_cachedVuCode, 1, 16384, f);
+                        std::fclose(f);
+                    }
+                    if (FILE *f = std::fopen((base + "data.bin").c_str(), "wb"))
+                    {
+                        std::fwrite(m_activeVuData, 1, m_activeVuDataSize, f);
+                        std::fclose(f);
+                    }
+                    if (FILE *f = std::fopen((base + "regs.txt").c_str(), "w"))
+                    {
+                        for (int r = 0; r < 32; ++r)
+                            std::fprintf(f, "vf%02d %g %g %g %g\n", r, m_state.vf[r][0], m_state.vf[r][1], m_state.vf[r][2], m_state.vf[r][3]);
+                        for (int r = 0; r < 16; ++r)
+                            std::fprintf(f, "vi%02d %d\n", r, m_state.vi[r]);
+                        std::fprintf(f, "pc %04x i %g q %g\n", m_state.pc, m_state.i, m_state.q);
+                        std::fclose(f);
+                    }
+                }
+            }
             queueClip(flags);
             return;
         }

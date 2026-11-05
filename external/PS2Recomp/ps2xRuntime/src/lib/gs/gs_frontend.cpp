@@ -1,3 +1,4 @@
+#include "runtime/gs/gs_draw_log.h"
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/gs/gs_cpu_backend.h"
 #include "ps2_log.h"
@@ -1579,6 +1580,10 @@ void GS::vertexKick(bool drawing)
         updatePreferredDisplaySourceForDraw(batch);
         m_backend->Submit(batch);
         recordDrawDebugEventUnlocked(needed);
+    }
+    else if (!drawing && ps2x::gsdebug::g_adcSkipHook)
+    {
+        ps2x::gsdebug::g_adcSkipHook(buildDrawBatch(needed));
     }
 
     switch (m_prim.type)

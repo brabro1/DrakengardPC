@@ -1,3 +1,4 @@
+#include "ps2_vu_clip_trace.h"
 #include "runtime/ps2_vu1.h"
 #include "runtime/gs/ps2_gif_arbiter.h"
 #include "runtime/gs/gs_frontend.h"
@@ -178,6 +179,7 @@ void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSiz
         uint32_t imm24 = instr & 0xFFFFFF;
         if (1 != 0)
             m_state.vi[1] = ((m_state.clip & 0xFFFFFF) == imm24) ? 1 : 0;
+        vuFlagReadTrace(m_unit == Unit::VU1 ? 1u : 0u, m_state.pc, "FCEQ", imm24, m_state.clip, static_cast<uint32_t>(m_state.vi[1]));
         return;
     }
     case 0x11: // FCSET
@@ -190,6 +192,7 @@ void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSiz
         uint32_t imm24 = instr & 0xFFFFFF;
         if (1 != 0)
             m_state.vi[1] = ((m_state.clip & imm24) != 0) ? 1 : 0;
+        vuFlagReadTrace(m_unit == Unit::VU1 ? 1u : 0u, m_state.pc, "FCAND", imm24, m_state.clip, static_cast<uint32_t>(m_state.vi[1]));
         return;
     }
     case 0x13: // FCOR
@@ -197,6 +200,7 @@ void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSiz
         uint32_t imm24 = instr & 0xFFFFFF;
         if (1 != 0)
             m_state.vi[1] = ((m_state.clip | imm24) == 0xFFFFFF) ? 1 : 0;
+        vuFlagReadTrace(m_unit == Unit::VU1 ? 1u : 0u, m_state.pc, "FCOR", imm24, m_state.clip, static_cast<uint32_t>(m_state.vi[1]));
         return;
     }
     case 0x14: // FSEQ
