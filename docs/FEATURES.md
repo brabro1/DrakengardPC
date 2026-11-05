@@ -11,7 +11,7 @@ Tested setup: Windows 11 Pro 26300, i5-12400F, RTX 3060, Drakengard (USA) SLUS-2
 |---|---|---|
 | Disc identity check (SYSTEM.CNF + ELF SHA-1) | verified | refuses other releases |
 | Static recompilation of the EE executable | verified | 8,315 functions, 0 decode failures |
-| Reproducible regeneration from the user's disc | implemented | `tools/recomp.py`; individual steps verified |
+| Reproducible regeneration from the user's disc | verified | `build.bat` (drag the ISO onto it) runs every step; `play.bat` starts the game |
 | Boot: crt0, kernel init, IOP module loading | verified | 8 IRX loaded and started |
 | Disc access at real ISO sectors (EE + IOP) | verified (EE search) | IOP search path implemented, not yet exercised |
 | Interrupts: DMAC, GS FINISH/SIGNAL, timers, VSync | verified | boot to gameplay depends on all of them |

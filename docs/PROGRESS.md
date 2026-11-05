@@ -330,7 +330,8 @@ Also: the GS backend thread now registers with Granite (each run logged 80,000â€
 Tests: `ps2x_tests` 455/455; pipeline tests 7/7. A test-only build error was fixed (runtime
 includes were inside `#if PS2X_HAVE_PARALLEL_GS`).
 
-Repository: docs moved to `docs/`, README rewritten for players and builders, personal paths
+Repository: docs moved to `docs/`, README rewritten for players (builder details in
+`docs/BUILDING.md`), `build.bat` / `play.bat` (tested on the reference PC with the real ISO), personal paths
 removed from tracked files (machine notes go to the ignored `CLAUDE.local.md`), GPL-3.0
 `LICENSE` added, third-party notices for paraLLEl-GS, Granite, volk and Vulkan-Headers.
 
