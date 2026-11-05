@@ -1,12 +1,16 @@
 // DrakengardPC host entry point.
 //
-// Verifies the user's disc is the supported revision, stages the few small boot
-// files the IOP side loads by name (ELF, IRX modules), points the runtime at the
-// disc image for everything else, then runs the statically recompiled game code.
+// Reads the player's settings (DrakengardPC.ini, written by the launcher), verifies the disc
+// is the supported revision, stages the few small boot files the IOP side loads by name (ELF,
+// IRX modules), points the runtime at the disc image for everything else, then runs the
+// statically recompiled game code. Started without arguments it takes everything from the
+// settings file, so the exe can be launched directly.
 
 #include "debug/sampler.h"
 #include "disc/iso9660.h"
 #include "game_identity.h"
+#include "platform/host_util.h"
+#include "settings/settings.h"
 
 #include "ps2_runtime.h"
 
@@ -27,13 +31,24 @@ namespace
     struct Options
     {
         fs::path iso;
-        fs::path dataDir = fs::current_path() / "work";
+        fs::path dataDir;
+        fs::path memcardDir;
+        fs::path settingsFile;
         int maxSeconds = 0; // 0 = run until the window closes
     };
 
     void usage()
     {
-        std::cerr << "usage: DrakengardPC --iso <Drakengard (USA).iso> [--data <dir>] [--max-seconds N]\n";
+        std::cerr << "usage: DrakengardPC [--settings <DrakengardPC.ini>] [--iso <Drakengard (USA).iso>] "
+                     "[--data <dir>] [--max-seconds N]\n"
+                     "Without --iso, the disc image and all options come from DrakengardPC.ini.\n";
+    }
+
+    // Shown to the player: a message box, since the game has no console.
+    void reportError(const std::string &text)
+    {
+        std::cerr << "[host] " << text << std::endl;
+        dkg::host::showMessage("DrakengardPC", text, true);
     }
 
     bool parseArgs(int argc, char **argv, Options &opt)
@@ -42,12 +57,41 @@ namespace
         {
             const std::string a = argv[i];
             auto next = [&]() -> const char * { return i + 1 < argc ? argv[++i] : nullptr; };
-            if (a == "--iso") { if (const char *v = next()) opt.iso = v; else return false; }
-            else if (a == "--data") { if (const char *v = next()) opt.dataDir = v; else return false; }
+            if (a == "--iso") { if (const char *v = next()) opt.iso = fs::u8path(v); else return false; }
+            else if (a == "--data") { if (const char *v = next()) opt.dataDir = fs::u8path(v); else return false; }
+            else if (a == "--settings") { if (const char *v = next()) opt.settingsFile = fs::u8path(v); else return false; }
             else if (a == "--max-seconds") { if (const char *v = next()) opt.maxSeconds = std::atoi(v); else return false; }
             else { std::cerr << "unknown argument: " << a << "\n"; return false; }
         }
-        return !opt.iso.empty();
+        return true;
+    }
+
+    // Applies DrakengardPC.ini to the options and to the runtime's environment switches
+    // (PS2X_*). A switch already set in the environment wins (developer overrides).
+    void applySettings(Options &opt)
+    {
+        if (opt.settingsFile.empty())
+            opt.settingsFile = dkg::findSettingsFile(dkg::host::exeDirectory());
+        dkg::Settings settings;
+        fs::path folder = fs::current_path();
+        if (!opt.settingsFile.empty() && settings.load(opt.settingsFile))
+        {
+            folder = fs::absolute(opt.settingsFile).parent_path();
+            for (const auto &[name, value] : settings.runtimeEnvironment())
+            {
+                if (!std::getenv(name.c_str()))
+                    dkg::host::setEnv(name, value);
+            }
+            if (opt.iso.empty())
+                opt.iso = settings.resolve(folder, settings.iso);
+            if (opt.dataDir.empty())
+                opt.dataDir = settings.dataDir(folder);
+            opt.memcardDir = settings.memcardDir(folder);
+        }
+        if (opt.dataDir.empty())
+            opt.dataDir = folder / "work";
+        if (opt.memcardDir.empty())
+            opt.memcardDir = opt.dataDir / "memcard" / "mc0";
     }
 
     bool writeFile(const fs::path &path, const std::vector<uint8_t> &data)
@@ -137,10 +181,26 @@ int main(int argc, char **argv)
         usage();
         return 2;
     }
+    applySettings(opt);
+    // Without a console (started from Explorer or the launcher), log to <data>/logs/game.log.
+    dkg::host::redirectLogsIfDetached(opt.dataDir / "logs" / "game.log");
+    if (!opt.settingsFile.empty())
+        std::cout << "[host] settings: " << opt.settingsFile.string() << "\n";
+    if (opt.iso.empty())
+    {
+        reportError("No disc image is set. Open the DrakengardPC Launcher and choose your "
+                    "Drakengard (USA) disc image.");
+        return 2;
+    }
 
     const fs::path elfPath = verifyAndStage(opt);
     if (elfPath.empty())
+    {
+        reportError("The game could not start from this disc image:\n" + opt.iso.string() +
+                    "\n\nOnly Drakengard (USA) is supported. The DrakengardPC Launcher can check your image. "
+                    "Details are in work\\logs\\game.log.");
         return 1;
+    }
 
     if (opt.maxSeconds > 0)
     {
@@ -172,7 +232,7 @@ int main(int argc, char **argv)
 
         PS2Runtime::IoPaths paths = PS2Runtime::getIoPaths();
         paths.cdImage = fs::absolute(opt.iso);
-        paths.mcRoot = opt.dataDir / "memcard" / "mc0";
+        paths.mcRoot = opt.memcardDir;
         fs::create_directories(paths.mcRoot);
         PS2Runtime::setIoPaths(paths);
 

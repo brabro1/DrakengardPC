@@ -335,6 +335,36 @@ Repository: docs moved to `docs/`, README rewritten for players (builder details
 removed from tracked files (machine notes go to the ignored `CLAUDE.local.md`), GPL-3.0
 `LICENSE` added, third-party notices for paraLLEl-GS, Granite, volk and Vulkan-Headers.
 
+### 2026-11-06 — session 6 (launcher, direct start, display and control options)
+
+- **DrakengardPC Launcher** (`src/launcher/`, Dear ImGui on raylib, no game code): Game (disc
+  picker with automatic identification), Display, Graphics, Controls (gamepad choice, dead zone,
+  rebinding every key with press-to-assign), Audio (coming soon), Saves (memory card folder,
+  one-click backups), PC Features, Build (tool check, MSYS2 package install, build with
+  progress and live log, cancel), About; Play. Features that do not exist are shown disabled as
+  "Coming soon". A launcher outside a DrakengardPC folder shows a Setup page that clones the
+  project with git (page checked by screenshot; the clone itself not run).
+- **Settings file** `DrakengardPC.ini` (`src/settings/`) shared by launcher and game.
+- **Direct start**: `DrakengardPC.exe` is a windowed (WIN32) program; without arguments it
+  finds `DrakengardPC.ini` (exe folder or up to two folders above), applies it, logs to
+  `work/logs/game.log` when it has no console, and reports problems in a message box. The 81
+  toolchain DLLs it needs are copied next to it at build time. Test: started from `C:\` with
+  MSYS2 removed from PATH, it found the settings and reached the first mission at 60 VSync/s.
+- **Runtime options** (environment switches set from the INI): window size and mode
+  (windowed / borderless / fullscreen, F11 toggles borderless), aspect 4:3 / stretch / pixels,
+  filtering, FPS counter; keyboard map, gamepad choice, stick dead zone. Window screenshots:
+  1280×960 windowed 4:3 with FPS counter; borderless 1920×1080 with pillarboxed 4:3. Exclusive
+  fullscreen, F11 and rebound keys were not exercised.
+- **Disc identification** (`src/disc/disc_info.cpp`): USA v1.00 by ELF SHA-1; Europe
+  (`SLES_523.22`, inferred from serial SLES-52322) and Japanese discs (by `SLPM`/`SLPS`/`SCPS`
+  prefix) are recognised and reported as not supported yet. Supporting them needs those disc
+  images (only the USA image is available) and a per-release pipeline.
+- `tools/build_game.py` replaces `build.bat`/`play.bat` (removed): `--iso` full pipeline (run
+  end to end with the real ISO), `--launcher`, `--check`; installs the CLANG64 packages with
+  pacman when MSYS2 is present but they are missing (not exercised: the tools were installed).
+- README rewritten around the launcher (screenshots of the launcher only, no game content);
+  the controls table now lists the real default keys (the earlier table was wrong).
+
 ## Main blockers
 
 1. **Audio**: none reaches the host (EzSound runs on the IOP; no output path).

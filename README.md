@@ -2,11 +2,13 @@
 
 # DrakengardPC
 
-**Drakengard (PlayStation 2, 2003) running as a native Windows PC game.**
+**Drakengard (PlayStation 2, 2003) running as a native Windows PC game, with its own launcher.**
 
 *Unofficial fan project · work in progress · not affiliated with Square Enix or Cavia*
 
 **Status: the first mission is playable at full speed. No sound yet.**
+
+<img src="docs/images/launcher-features.png" alt="The DrakengardPC Launcher" width="760">
 
 </div>
 
@@ -51,6 +53,29 @@ i5-12400F, NVIDIA RTX 3060):
 want to finish Drakengard today, use your PS2 or an emulator. Progress is tracked in
 [docs/PROGRESS.md](docs/PROGRESS.md).
 
+## The launcher
+
+**DrakengardPC Launcher** is where everything happens: you pick your disc image, build the game
+from it, change settings, and press **Play**. After that you can also start the game directly
+with `DrakengardPC.exe`; it uses the same settings.
+
+| Page | What you can do |
+|---|---|
+| **Game** | Choose your disc image; it is checked automatically (version and region) |
+| **Display** | Windowed, borderless or fullscreen; window size; 4:3 or stretched picture; smooth or sharp pixels; FPS counter |
+| **Graphics** | GPU (Vulkan) or CPU renderer; anti-aliasing (supersampling); performance options |
+| **Controls** | Choose the gamepad, stick dead zone, change every keyboard key |
+| **Audio** | Volume settings, ready for when sound works |
+| **Saves** | Open or move the memory card folder; back it up with one click |
+| **PC Features** | What works now and what is planned |
+| **Build** | Checks the free build tools (and installs part of them for you), then builds the game from your disc with a progress bar |
+| **About** | Credits and license |
+
+<p align="center">
+<img src="docs/images/launcher-display.png" alt="Display settings" width="49%">
+<img src="docs/images/launcher-controls.png" alt="Controls" width="49%">
+</p>
+
 ## Features
 
 **Working now**
@@ -59,7 +84,10 @@ want to finish Drakengard today, use your PS2 or an emulator. Progress is tracke
 - Graphics drawn on your GPU (Vulkan)
 - Full speed (the PS2's 60 frames per second display rate) in everything tested so far
 - Game logic, graphics processing and drawing each on their own CPU thread
-- Gamepad (detected automatically), plus a keyboard fallback
+- Windowed, borderless fullscreen and fullscreen; correct 4:3 picture; **F11** switches to
+  fullscreen in game
+- Gamepad (detected automatically) and fully rebindable keyboard
+- A launcher with settings, disc check, one-click build and save backups
 - Only reads your disc image; never changes it
 
 ## What's coming
@@ -68,11 +96,12 @@ Planned, in rough order. None of these exist yet.
 
 - 🔊 Sound and music
 - 💾 Saving, with automatic backups
-- 🖥️ Higher resolutions (1080p, 1440p, 4K) and fullscreen / borderless window
+- 🌍 The European and Japanese releases (Drakengard EU, Drag-On Dragoon)
+- 🖥️ Higher resolutions (1080p, 1440p, 4K)
 - ↔️ Widescreen and ultrawide
 - ⚡ Higher frame rates (120/144 FPS and more)
 - ✨ DLSS and FSR upscaling
-- 🎮 Button remapping and better keyboard/mouse controls
+- 🎮 Gamepad button remapping and mouse camera
 - 🧩 Mod support (replacing textures and other files)
 
 Details: [docs/FEATURES.md](docs/FEATURES.md).
@@ -83,7 +112,7 @@ Details: [docs/FEATURES.md](docs/FEATURES.md).
 
 | | |
 |---|---|
-| **Your own copy of the game** | *Drakengard*, **USA version** (serial SLUS-20732), as a disc image (`.iso`) made from your own disc. European and Japanese versions are **not** supported. |
+| **Your own copy of the game** | *Drakengard*, **USA version** (serial SLUS-20732), as a disc image (`.iso`) made from your own disc. The launcher recognises the European and Japanese releases but cannot run them yet. |
 | **A Windows PC** | Windows 10 or 11 (64-bit) |
 | **Processor** | Intel 4th generation (Haswell) / AMD Ryzen or newer (AVX2 needed) |
 | **Graphics card** | Any recent NVIDIA, AMD or Intel GPU with up-to-date drivers (Vulkan) |
@@ -93,7 +122,7 @@ Details: [docs/FEATURES.md](docs/FEATURES.md).
 > **Why isn't there a simple download of the game?**
 > The finished program contains Drakengard's code (translated). That belongs to Square Enix,
 > so it can't be shared. Instead, you get the *tools* here, and they turn **your own copy** into
-> the PC version on your own computer. Two double-click scripts do all the work.
+> the PC version on your own computer. The launcher does all the work for you.
 
 ## How to install and play
 
@@ -103,55 +132,61 @@ Details: [docs/FEATURES.md](docs/FEATURES.md).
    the default options.
 2. **Python** — download from [python.org](https://www.python.org/downloads/windows/). In the
    installer, **tick "Add python.exe to PATH"** before you click *Install*.
-3. **MSYS2** (the compiler) — download from [msys2.org](https://www.msys2.org/) and install it
-   to the default folder `C:\msys64`. Then open **"MSYS2 MSYS"** from the Start menu, paste this
-   line, press **Enter**, and answer **Y**:
+3. **MSYS2** — download from [msys2.org](https://www.msys2.org/) and install it to the default
+   folder `C:\msys64`. That's all; DrakengardPC installs the compiler into it for you.
 
-   ```bash
-   pacman -S --needed mingw-w64-clang-x86_64-toolchain mingw-w64-clang-x86_64-cmake mingw-w64-clang-x86_64-ninja mingw-w64-clang-x86_64-pkgconf mingw-w64-clang-x86_64-ffmpeg
-   ```
+### Step 2 — Get DrakengardPC and its launcher (once)
 
-### Step 2 — Download DrakengardPC (once)
-
-Open **Command Prompt** in the folder where you want it (for example your Documents folder)
-and run:
+Open **Command Prompt** in the folder where you want DrakengardPC (for example Documents) and
+run these two lines:
 
 ```bash
 git clone --recursive https://github.com/brabro1/DrakengardPC.git
 ```
 
-This creates a `DrakengardPC` folder. (The green *Download ZIP* button doesn't work for this
-project, because it leaves out the graphics renderer.)
+```bash
+cd DrakengardPC && python -I tools/build_game.py --launcher
+```
+
+The second line builds **DrakengardPC Launcher.exe**. The first time it also installs the
+compiler into MSYS2 (about 2 GB download, a few minutes). The launcher appears in
+`DrakengardPC\build\game\`. Right-click it → *Send to* → *Desktop (create shortcut)* to keep it
+handy.
+
+> A ready-to-download launcher is planned. It will download DrakengardPC by itself, so Step 2
+> becomes a single click.
 
 ### Step 3 — Build the game from your disc (once)
 
-Open the `DrakengardPC` folder and **drag your `Drakengard (USA).iso` file onto `build.bat`**.
+Start **DrakengardPC Launcher**:
 
-A window shows the progress. It checks that your disc is the right version, translates the
-game, and compiles it. The first time takes a while (about 15–30 minutes on a modern PC). When it
-says **Done**, you're ready.
+1. **Game** page → *Choose disc image…* → pick your `Drakengard (USA).iso`. It should say
+   **"Drakengard (USA) v1.00 – supported"**.
+2. **Build** page → check that every tool says *Installed* (use *Install the build tools* if
+   not) → **Build the game**. The first time takes about 15–30 minutes; the progress bar and log
+   show what is happening.
 
 ### Step 4 — Play
 
-**Double-click `play.bat`.** That's it. From now on this is the only step.
+Press **PLAY** in the launcher. You can also start `DrakengardPC.exe` (in
+`DrakengardPC\build\game\`) directly; it uses the launcher's settings.
 
 ## Controls
 
-A connected gamepad is used automatically. Without one, use the keyboard:
+A connected gamepad is used automatically (Xbox layout: A = ✕, B = ○, X = □, Y = △). Without
+one, the keyboard works like this by default; every key can be changed on the launcher's
+**Controls** page:
 
-| PS2 button | Keyboard |
+| PS2 | Keyboard |
 |---|---|
-| D-pad (move) | Arrow keys or W A S D |
-| ✕ | X or Space |
-| ○ | C |
-| □ (attack) | Z |
-| △ | V |
-| Start | Enter |
-| Select | Tab |
+| D-pad | Arrow keys |
+| Left stick | W A S D |
+| ✕ / ○ / □ / △ | X / C / Z / V |
 | L1 / R1 | Q / E |
-| L2 / R2 | Shift |
-
-The keys can't be changed yet.
+| L2 / R2 | 1 / 3 |
+| L3 / R3 | Left Ctrl / Right Ctrl |
+| Start / Select | Enter / Right Shift |
+| *Fullscreen on/off* | *F11* |
 
 ## Questions
 
@@ -165,20 +200,25 @@ controller drivers; they are listed in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.
 No. Nothing from the game is in this project. You need your own copy of Drakengard (USA).
 
 **Which version of the game do I need?**
-Drakengard for PlayStation 2, **USA release** (SLUS-20732). `build.bat` checks your disc
-image and refuses other versions, because every version's code is different.
+Drakengard for PlayStation 2, **USA release** (SLUS-20732). The launcher checks your disc
+image. The European (SLES-52322) and Japanese (Drag-On Dragoon) releases are recognised but not
+supported yet: every release has different program code, so each one has to be translated and
+tested on its own, and that needs those discs.
 
 **Will it run on my PC?**
 It has only been tested on one PC so far (Intel Core i5-12400F, NVIDIA RTX 3060), where it
 runs at full speed with plenty of power to spare. Slower PCs haven't been tried yet; reports
 are welcome.
 
-**Where are my saves?**
-In `work\memcard\mc0` inside the DrakengardPC folder, once saving works.
+**Where are my saves and settings?**
+Settings: `DrakengardPC.ini` in the DrakengardPC folder (the launcher writes it). Saves:
+`work\memcard\mc0`, or the folder you choose on the **Saves** page, once saving works. Backups
+made by the launcher go to `save_backups\`.
 
-**Can I change the resolution or play in widescreen?**
-Not yet. The game draws its original 640×448 picture, shown in a window you can resize. Higher
-resolutions and widescreen are planned.
+**Can I play in widescreen or at a higher resolution?**
+Not yet. The game draws its original 640×448 picture; the launcher lets you show it in any
+window size or fullscreen, at the correct 4:3 shape. Widescreen and higher resolutions are
+planned.
 
 **Is there a Mac or Linux version?**
 Not at the moment. Windows only.
@@ -191,18 +231,17 @@ Testing on different PCs and reporting what happens is very useful. Developers: 
 
 | Problem | What to do |
 |---|---|
-| `build.bat` says MSYS2 was not found | Install MSYS2 to `C:\msys64` and run the `pacman` line from Step 1. If you installed it somewhere else, set the environment variable `MSYS2_CLANG64_BIN` to your `msys64\clang64\bin` folder. |
-| `build.bat` says Python or Git was not found | Install it (Step 1). For Python, re-run the installer and tick "Add python.exe to PATH". |
-| It says the disc is the wrong version / `unsupported revision` | Only Drakengard **USA** (SLUS-20732) works. Make the image from the USA disc. |
-| "avcodec-63.dll was not found" | Start the game with `play.bat`, not the `.exe` directly. |
-| The window stays black or closes at once | Update your graphics card driver. |
-| You moved your `.iso` file | Drag it onto `build.bat` again (this time it only takes a moment). |
-| Something else | Note what the window said and open an issue on the project's GitHub page. |
+| A tool shows *Missing* on the Build page | Install it (Step 1) and press *Check again*. For Python, re-run its installer and tick "Add python.exe to PATH", then restart the launcher. |
+| The disc says *not supported* | Only Drakengard **USA** v1.00 (SLUS-20732) works for now. |
+| The build stops with an error | The log on the Build page shows why. Press *Build the game* again after fixing it. |
+| The game window is black or closes at once | Update your graphics card driver. On the Graphics page you can try the CPU renderer. |
+| The game says it can't start | Open the launcher and check the Game page. The game's log is `work\logs\game.log`. |
+| Something else | Note what the launcher or `work\logs\game.log` says and open an issue on the project's GitHub page. |
 
 ## Updating
 
-Open Command Prompt in the `DrakengardPC` folder and run `git pull`, then drag your ISO onto
-`build.bat` again.
+Open Command Prompt in the `DrakengardPC` folder and run `git pull`. Then press **Rebuild the
+game** on the launcher's Build page.
 
 ---
 
@@ -223,6 +262,8 @@ Open Command Prompt in the `DrakengardPC` folder and run `git pull`, then drag y
 - [Drakengard1Recompile](https://github.com/k1gs/Drakengard1Recompile) by k1gs: a related
   project whose fixes helped this one
 - [PCSX2](https://pcsx2.net/): used as the reference for how the PS2 behaves
+- [Dear ImGui](https://github.com/ocornut/imgui), [raylib](https://www.raylib.com/) and
+  [Font Awesome](https://fontawesome.com/): the launcher's interface
 
 ## License and legal
 

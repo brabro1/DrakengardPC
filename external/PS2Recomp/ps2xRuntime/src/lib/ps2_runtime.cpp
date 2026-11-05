@@ -27,6 +27,8 @@
 #include "ps2_iop_host.h"
 #include "ps2x/iop/iop_subsystem.h"
 
+#include <cstdio>
+#include "rlgl.h"
 #include <iostream>
 #include <stdexcept>
 #include <fstream>
@@ -58,10 +60,72 @@ static constexpr uint32_t DEFAULT_FB_ADDR = (PS2_RAM_SIZE - DEFAULT_FB_SIZE - 0x
 #if defined(PLATFORM_VITA)
 static constexpr int HOST_WINDOW_WIDTH = 960;
 static constexpr int HOST_WINDOW_HEIGHT = 544;
+
 #else
 static constexpr int HOST_WINDOW_WIDTH = FB_WIDTH;
 static constexpr int HOST_WINDOW_HEIGHT = DEFAULT_DISPLAY_HEIGHT;
 #endif
+namespace
+{
+    // Host window options. Set through the environment (the DrakengardPC game sets them from
+    // DrakengardPC.ini): PS2X_WINDOW_SIZE=WxH, PS2X_WINDOW_MODE=windowed|borderless|fullscreen,
+    // PS2X_ASPECT=4:3|stretch|pixels, PS2X_FILTER=linear|nearest, PS2X_SHOW_FPS=1.
+    struct HostDisplayOptions
+    {
+        int width = HOST_WINDOW_WIDTH;
+        int height = HOST_WINDOW_HEIGHT;
+        std::string mode = "windowed";
+        std::string aspect = "pixels";
+        bool nearest = false;
+        bool showFps = false;
+    };
+
+    const HostDisplayOptions &hostDisplayOptions()
+    {
+        static const HostDisplayOptions options = []
+        {
+            HostDisplayOptions o;
+            auto env = [](const char *name) -> std::string
+            {
+                const char *v = std::getenv(name);
+                return v ? std::string(v) : std::string();
+            };
+            const std::string size = env("PS2X_WINDOW_SIZE");
+            int w = 0, h = 0;
+            if (std::sscanf(size.c_str(), "%dx%d", &w, &h) == 2 && w >= 320 && h >= 240)
+            {
+                o.width = w;
+                o.height = h;
+            }
+            const std::string mode = env("PS2X_WINDOW_MODE");
+            if (mode == "borderless" || mode == "fullscreen")
+                o.mode = mode;
+            const std::string aspect = env("PS2X_ASPECT");
+            if (aspect == "4:3" || aspect == "stretch")
+                o.aspect = aspect;
+            o.nearest = env("PS2X_FILTER") == "nearest";
+            o.showFps = env("PS2X_SHOW_FPS") == "1";
+            return o;
+        }();
+        return options;
+    }
+
+    void applyHostWindowMode()
+    {
+        const HostDisplayOptions &o = hostDisplayOptions();
+        if (o.mode == "borderless")
+        {
+            ToggleBorderlessWindowed();
+        }
+        else if (o.mode == "fullscreen")
+        {
+            const int monitor = GetCurrentMonitor();
+            SetWindowSize(GetMonitorWidth(monitor), GetMonitorHeight(monitor));
+            ToggleFullscreen();
+        }
+    }
+}
+
 struct ElfHeader
 {
     uint32_t magic;
@@ -817,7 +881,8 @@ bool PS2Runtime::initialize(const char *title)
         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
 #else
         SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-        InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
+        InitWindow(hostDisplayOptions().width, hostDisplayOptions().height, title);
+        applyHostWindowMode();
         InitAudioDevice();
         m_audioBackend.setAudioReady(IsAudioDeviceReady());
 #endif
@@ -2534,6 +2599,7 @@ void PS2Runtime::run()
     Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
     Texture2D frameTex = LoadTextureFromImage(blank);
     UnloadImage(blank);
+    SetTextureFilter(frameTex, hostDisplayOptions().nearest ? TEXTURE_FILTER_POINT : TEXTURE_FILTER_BILINEAR);
 
     std::atomic<bool> gameThreadFinished{false};
 
@@ -2663,9 +2729,17 @@ void PS2Runtime::run()
         const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
         const float screenWidth = static_cast<float>(GetScreenWidth());
         const float screenHeight = static_cast<float>(GetScreenHeight());
-        const float scale = std::min(screenWidth / srcWidth, screenHeight / srcHeight);
-        const float dstWidth = srcWidth * scale;
-        const float dstHeight = srcHeight * scale;
+        // PS2 games are made for a 4:3 TV whatever the framebuffer size; "pixels" keeps the
+        // framebuffer's own shape, "stretch" fills the window.
+        const std::string &aspectMode = hostDisplayOptions().aspect;
+        const float imageAspect = aspectMode == "4:3" ? (4.0f / 3.0f) : (srcWidth / srcHeight);
+        float dstWidth = screenWidth;
+        float dstHeight = screenHeight;
+        if (aspectMode != "stretch")
+        {
+            dstWidth = std::min(screenWidth, screenHeight * imageAspect);
+            dstHeight = dstWidth / imageAspect;
+        }
         const Rectangle srcRect{0.0f, 0.0f, srcWidth, srcHeight};
         const Rectangle dstRect{
             (screenWidth - dstWidth) * 0.5f,
@@ -2673,6 +2747,32 @@ void PS2Runtime::run()
             dstWidth,
             dstHeight};
         DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
+        if (hostDisplayOptions().showFps)
+        {
+            DrawFPS(10, 10);
+        }
+        if (IsKeyPressed(KEY_F11))
+        {
+            ToggleBorderlessWindowed();
+        }
+        {
+            // Diagnostic: PS2X_WINDOW_SCREENSHOT=<png>:<host frame> saves the window as shown.
+            static const char *s_shot = std::getenv("PS2X_WINDOW_SCREENSHOT");
+            static uint64_t s_hostFrames = 0;
+            if (s_shot && *s_shot)
+            {
+                const std::string spec(s_shot);
+                const size_t colon = spec.rfind(':');
+                const uint64_t at = colon != std::string::npos ? std::strtoull(spec.c_str() + colon + 1, nullptr, 10) : 600u;
+                if (++s_hostFrames == at)
+                {
+                    rlDrawRenderBatchActive(); // draw what is batched so far
+                    Image shot = LoadImageFromScreen();
+                    ExportImage(shot, spec.substr(0, colon).c_str());
+                    UnloadImage(shot);
+                }
+            }
+        }
         if (m_debugUiInitialized && m_debugUiDrawCallback)
         {
             m_debugUiDrawCallback(*this, m_debugUiUserData);

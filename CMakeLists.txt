@@ -12,10 +12,14 @@ set(DRAKENGARD_GENERATED_DIR "${CMAKE_SOURCE_DIR}/work/recomp/generated"
     CACHE PATH "Directory holding ps2_recomp output for SLUS-20732")
 set(DRAKENGARD_UNITY_BATCH 32 CACHE STRING "Generated functions per unity translation unit")
 
-if(NOT EXISTS "${DRAKENGARD_GENERATED_DIR}/register_functions.cpp")
-    message(FATAL_ERROR
-        "No generated code in ${DRAKENGARD_GENERATED_DIR}.\n"
-        "Run: python -I tools/recomp.py <path to your Drakengard (USA) ISO>")
+# Without translated code (a fresh checkout) only the launcher is built; the launcher's Build
+# page (tools/build_game.py) translates the player's disc and builds the game.
+if(EXISTS "${DRAKENGARD_GENERATED_DIR}/register_functions.cpp")
+    set(DRAKENGARD_HAVE_GAME_CODE ON)
+else()
+    set(DRAKENGARD_HAVE_GAME_CODE OFF)
+    message(STATUS "No generated code in ${DRAKENGARD_GENERATED_DIR}: building the launcher only. "
+                   "Build the game from the launcher, or run: python -I tools/build_game.py --iso <ISO>")
 endif()
 
 # Only the runtime libraries are needed from PS2Recomp here; the recompiler and
@@ -67,6 +71,47 @@ if(NOT MSVC)
         PROPERTIES COMPILE_OPTIONS "${DRAKENGARD_GS_FLAGS}")
 endif()
 
+# Copies the toolchain DLLs an executable needs next to it (cmake/copy_runtime_dlls.cmake).
+function(drakengard_copy_runtime_dlls target)
+    if(MINGW)
+        get_filename_component(_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        find_program(DRAKENGARD_OBJDUMP NAMES llvm-objdump objdump HINTS "${_bin}")
+        if(DRAKENGARD_OBJDUMP)
+            add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND "${CMAKE_COMMAND}" "-DEXE=$<TARGET_FILE:${target}>" "-DSEARCH_DIRS=${_bin}"
+                        "-DOBJDUMP=${DRAKENGARD_OBJDUMP}" -P "${CMAKE_SOURCE_DIR}/cmake/copy_runtime_dlls.cmake"
+                VERBATIM)
+        endif()
+    endif()
+endfunction()
+
+# Settings and disc identification, shared by the game and the launcher.
+add_library(drakengard_common STATIC
+    src/settings/settings.cpp
+    src/disc/iso9660.cpp
+    src/disc/disc_info.cpp
+    src/game_identity.cpp
+    src/platform/host_util.cpp)
+target_include_directories(drakengard_common PUBLIC src)
+target_link_libraries(drakengard_common PUBLIC raylib)
+
+# The launcher: settings, disc check, building the game from the player's disc, Play.
+add_executable(DrakengardPCLauncher WIN32
+    src/launcher/launcher_main.cpp
+    src/launcher/launcher_ui.cpp
+    src/launcher/launcher_process.cpp)
+set_target_properties(DrakengardPCLauncher PROPERTIES OUTPUT_NAME "DrakengardPC Launcher")
+target_link_libraries(DrakengardPCLauncher PRIVATE drakengard_common rlImGui imgui raylib)
+if(MINGW)
+    target_link_options(DrakengardPCLauncher PRIVATE -static-libgcc -static-libstdc++)
+    target_link_libraries(DrakengardPCLauncher PRIVATE comdlg32 shell32 ole32)
+endif()
+drakengard_copy_runtime_dlls(DrakengardPCLauncher)
+
+if(NOT DRAKENGARD_HAVE_GAME_CODE)
+    return()
+endif()
+
 file(GLOB DRAKENGARD_GENERATED_SOURCES CONFIGURE_DEPENDS "${DRAKENGARD_GENERATED_DIR}/*.cpp")
 list(LENGTH DRAKENGARD_GENERATED_SOURCES DRAKENGARD_GENERATED_COUNT)
 message(STATUS "Generated translation units: ${DRAKENGARD_GENERATED_COUNT}")
@@ -102,16 +147,16 @@ if(DRAKENGARD_VU1_SOURCES)
     endif()
 endif()
 
-add_executable(DrakengardPC
+# WIN32: a windowed game without a console (logs go to work/logs/game.log).
+add_executable(DrakengardPC WIN32
     src/main.cpp
-    src/disc/iso9660.cpp
-    src/game_identity.cpp
     src/overrides/drakengard_overrides.cpp
     src/debug/trace_hooks.cpp
     src/debug/sampler.cpp
 )
 target_include_directories(DrakengardPC PRIVATE src)
-target_link_libraries(DrakengardPC PRIVATE drakengard_generated ps2_runtime)
+target_link_libraries(DrakengardPC PRIVATE drakengard_generated ps2_runtime drakengard_common)
+drakengard_copy_runtime_dlls(DrakengardPC)
 if(DRAKENGARD_VU1_SOURCES)
     target_link_libraries(DrakengardPC PRIVATE drakengard_vu1)
     target_compile_definitions(DrakengardPC PRIVATE DRAKENGARD_HAVE_VU1_AOT=1)

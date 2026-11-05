@@ -32,6 +32,17 @@ code's PCH, e.g. `ps2_vu1.h`, `gs_frontend.h`) rebuilds everything — prefer `.
 new headers. VU microprograms: `python -I tools/vu_recomp.py work/disc/SLUS_207.32 work/recomp/vu1`
 (also run by `recomp.py`); only the `drakengard_vu1` library rebuilds.
 
+## Launcher and settings
+
+- `DrakengardPC Launcher.exe` (`src/launcher/`) and `DrakengardPC.exe` share `DrakengardPC.ini`
+  (`src/settings/`, in the repo root, git-ignored). The game maps it to `PS2X_*` environment
+  switches; a switch already in the environment wins. `tools/build_game.py` is what the launcher's
+  Build page runs (`--launcher`, `--iso`, `--check`).
+- Launcher screenshots for checks: `DKG_LAUNCHER_SCREENSHOT=<png> DKG_LAUNCHER_PAGE=<0-8>`.
+  Game window screenshots: `PS2X_WINDOW_SCREENSHOT=<png>:<host frame>`.
+- Only Drakengard USA v1.00 runs. EU/JP discs are recognised by `src/disc/disc_info.cpp`
+  (boot ELF name) and refused; supporting them needs those images.
+
 ## Run / debug
 
 ```bash

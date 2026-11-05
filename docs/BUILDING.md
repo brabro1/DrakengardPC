@@ -1,8 +1,8 @@
 # Building and developing DrakengardPC
 
 This page is for people who want to build the port by hand, change it, or help debug it.
-If you only want to play, follow the steps in the [README](../README.md): `build.bat` and
-`play.bat` do everything below for you.
+If you only want to play, follow the steps in the [README](../README.md): the launcher does
+everything below for you (through `tools/build_game.py`).
 
 ## How the build works
 
@@ -14,7 +14,15 @@ If you only want to play, follow the steps in the [README](../README.md): `build
    game's 53 vector-unit (VU0/VU1) microprograms with `tools/vu_recomp.py`. Everything goes to
    `work/`, which is never committed.
 3. **The game** is compiled from that generated code plus the runtime into
-   `build/game/DrakengardPC.exe`.
+   `build/game/DrakengardPC.exe`. The toolchain DLLs it needs are copied next to it
+   (`cmake/copy_runtime_dlls.cmake`), so it runs without MSYS2 on `PATH`.
+
+The same CMake project also builds **`DrakengardPC Launcher.exe`** (`src/launcher/`, Dear ImGui
+on raylib). It contains no game code and builds even before any game code was generated.
+`tools/build_game.py` is the scripted version of all steps: `--launcher` builds only the
+launcher, `--iso <ISO>` runs the whole pipeline (the launcher's Build page), `--check` lists the
+tools. If the CLANG64 packages are missing but MSYS2 is installed, it installs them with
+`pacman` first.
 
 ## Requirements
 
@@ -66,6 +74,9 @@ cmake --build build/game --target DrakengardPC
 build/game/DrakengardPC.exe --iso "path/to/Drakengard (USA).iso" --data work
 ```
 
+The launcher has a test mode for screenshots: `DKG_LAUNCHER_SCREENSHOT=<png>` and
+`DKG_LAUNCHER_PAGE=<0-8>` save one frame of a page and exit.
+
 A full game build takes about 10 minutes on 12 threads. Changing `ps2_runtime.h` or any header
 it includes rebuilds all generated code.
 
@@ -74,11 +85,20 @@ Build options: `-DDRAKENGARD_GPU_GS=OFF` (software renderer only), `-DDRAKENGARD
 
 ## Command line and environment
 
+`DrakengardPC.exe` reads **`DrakengardPC.ini`** (written by the launcher; looked up with
+`--settings`, else in the exe folder or up to two folders above it). Every option in it maps to
+an environment switch below; a switch already set in the environment wins.
+
 | Option | Effect |
 |---|---|
-| `--iso <file>` | disc image (required) |
+| `--settings <file>` | settings file (default: `DrakengardPC.ini`, see above) |
+| `--iso <file>` | disc image (default: from the settings file) |
 | `--data <folder>` | where generated data and memory cards live (`work`) |
 | `--max-seconds N` | quit after N seconds (automated tests) |
+| `PS2X_WINDOW_MODE` / `PS2X_WINDOW_SIZE` | `windowed`/`borderless`/`fullscreen`; `1280x960` |
+| `PS2X_ASPECT` / `PS2X_FILTER` / `PS2X_SHOW_FPS` | `4:3`/`stretch`/`pixels`; `linear`/`nearest`; `1` |
+| `PS2X_GAMEPAD` / `PS2X_PAD_DEADZONE` / `PS2X_KEYMAP` | `auto`/`off`/`0-3`; `0.15`; `up=265,cross=88,...` (raylib key codes) |
+| `PS2X_WINDOW_SCREENSHOT=<png>:<frame>` | save the game window at a host frame (tests) |
 | `PS2X_GS_RENDERER=cpu` | software GS renderer instead of the GPU (paraLLEl-GS) |
 | `PS2X_GS_SSAA=N` | GPU renderer supersampling (1/2/4/8/16) |
 | `PS2X_VU_AOT=0` | interpret VU microprograms instead of running the compiled ones |
@@ -104,9 +124,10 @@ cd external/PS2Recomp && ../../build/ps2recomp/ps2xTest/ps2x_tests.exe
 
 | Path | Contents |
 |---|---|
-| `build.bat`, `play.bat` | one-step setup and launcher for players |
-| `src/` | the port: start-up, disc reader, game identity check, game-specific overrides |
-| `tools/` | translation pipeline (`recomp.py`, `vu_recomp.py`) and analysis/debug tools |
+| `src/` | the port: start-up, disc reader and identification, settings, game-specific overrides |
+| `src/launcher/` | DrakengardPC Launcher |
+| `cmake/` | build helpers (copying runtime DLLs) |
+| `tools/` | `build_game.py` (used by the launcher), translation pipeline (`recomp.py`, `vu_recomp.py`), analysis/debug tools |
 | `tests/` | pipeline tests |
 | `external/PS2Recomp/` | recompiler and PS2 runtime (vendored, with this project's changes) |
 | `external/parallel-gs/` | GPU graphics renderer (git submodule) |

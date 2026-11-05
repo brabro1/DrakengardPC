@@ -11,7 +11,11 @@ Tested setup: Windows 11 Pro 26300, i5-12400F, RTX 3060, Drakengard (USA) SLUS-2
 |---|---|---|
 | Disc identity check (SYSTEM.CNF + ELF SHA-1) | verified | refuses other releases |
 | Static recompilation of the EE executable | verified | 8,315 functions, 0 decode failures |
-| Reproducible regeneration from the user's disc | verified | `build.bat` (drag the ISO onto it) runs every step; `play.bat` starts the game |
+| Reproducible regeneration from the user's disc | verified | launcher Build page / `tools/build_game.py --iso` runs every step (tested with the real ISO) |
+| Launcher (settings, disc check, build, Play) | verified | `DrakengardPC Launcher.exe`; all pages rendered and checked by screenshot; Play uses the same command line as the tested direct start |
+| Game exe starts directly | verified | `DrakengardPC.exe` without arguments reads `DrakengardPC.ini`; runs from any folder without MSYS2 on PATH (DLLs next to it); logs to `work/logs/game.log` |
+| Disc identification (USA / Europe / Japan) | implemented | USA v1.00 verified as supported; EU (`SLES_523.22`, inferred from serial SLES-52322) and Japanese discs are recognised by boot ELF name only and reported as not supported (no images to test) |
+| Europe and Japan releases | planned | each needs its own translation, overrides and testing; needs those disc images |
 | Boot: crt0, kernel init, IOP module loading | verified | 8 IRX loaded and started |
 | Disc access at real ISO sectors (EE + IOP) | verified (EE search) | IOP search path implemented, not yet exercised |
 | Interrupts: DMAC, GS FINISH/SIGNAL, timers, VSync | verified | boot to gameplay depends on all of them |
@@ -41,12 +45,14 @@ Tested setup: Windows 11 Pro 26300, i5-12400F, RTX 3060, Drakengard (USA) SLUS-2
 
 | Feature | State | Notes |
 |---|---|---|
-| Windowed output (640×448) | verified | GPU renderer by default; software GS kept as the correctness reference |
+| Windowed output | verified | window size from settings (default 1280×960), resizable; GPU renderer by default |
+| Aspect ratio 4:3 / stretch / original pixels, smooth or sharp filtering, FPS counter | verified (4:3, FPS) | window screenshot at 1280×960 (session 6) |
 | Higher internal resolution (1080p/1440p/4K) | planned | paraLLEl-GS supersampling (`PS2X_GS_SSAA`) exists; true upscaling needs a draw-level renderer |
 | Separate internal/output resolution | planned | |
 | Widescreen / ultrawide | planned | hook point identified: `sceVu0ViewScreenMatrix` (`0x2FCFD0`) |
 | HUD positioning/scaling | planned | |
-| Borderless / fullscreen, VSync, frame cap, VRR | planned | |
+| Borderless fullscreen, exclusive fullscreen, F11 toggle | verified (borderless) | borderless screenshot at 1920×1080 with pillarboxed 4:3; exclusive fullscreen and F11 not tested |
+| VSync options, frame cap, VRR | planned | |
 
 ## Frame rate and timing
 
@@ -70,9 +76,10 @@ Tested setup: Windows 11 Pro 26300, i5-12400F, RTX 3060, Drakengard (USA) SLUS-2
 | Feature | State | Notes |
 |---|---|---|
 | Controller (DualShock 2 analog + pressure modes) | verified | game locks analog mode and enables pressure mode; menus respond |
-| Keyboard fallback | implemented | fixed mapping (README); not yet rebindable |
+| Keyboard with rebinding | implemented | every PS2 button and the left stick; launcher Controls page; not tested with real key presses |
+| Gamepad choice and stick dead zone | implemented | launcher Controls page |
 | Scripted input for tests | verified | `PS2X_PAD_SCRIPT` |
-| Keyboard/mouse with rebinding | planned | |
+| Gamepad remapping, mouse camera | planned | |
 | Dead zones, button prompts, mouse camera | planned | |
 
 ## Mods

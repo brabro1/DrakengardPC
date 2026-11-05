@@ -22,11 +22,15 @@ targets are built; check the linked set before distributing a binary.
 
 Pulled by PS2Recomp's CMake (`FetchContent`) into `build/_deps`:
 
+(raylib, Dear ImGui, rlImGui and Font Awesome are also linked into `DrakengardPC Launcher.exe`;
+their license texts must accompany any distributed launcher.)
+
 | Component | Version | License |
 |---|---|---|
 | raylib | 5.5 | zlib |
 | Dear ImGui | v1.92.7-docking | MIT |
 | rlImGui | Raylib_5_5 tag | zlib |
+| Font Awesome Free 6 (font, shipped inside rlImGui `extras/`) | as pinned by rlImGui | SIL OFL 1.1 (font), CC BY 4.0 (icons) |
 | ELFIO | Release_3.12 | MIT |
 | toml11 | v4.4.0 | MIT |
 | {fmt} | 12.1.0 | MIT |

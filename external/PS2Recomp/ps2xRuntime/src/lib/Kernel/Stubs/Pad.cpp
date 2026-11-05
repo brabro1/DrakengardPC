@@ -145,6 +145,75 @@ namespace ps2_stubs
         PadPortState g_padPorts[kPadPortCount]{};
         int g_padReadLogCount = 0;
 
+        // Host input options, set through the environment (the DrakengardPC game sets them from
+        // DrakengardPC.ini): PS2X_KEYMAP="up=265,cross=88,...", PS2X_GAMEPAD=auto|off|0-3,
+        // PS2X_PAD_DEADZONE=0.15.
+        struct HostInputOptions
+        {
+            int gamepad = -1; // -1 auto, -2 off, 0..3 fixed
+            float deadzone = 0.0f;
+            // Keyboard keys (raylib codes) per mapped control; defaults are the original mapping.
+            int up = KEY_UP, down = KEY_DOWN, left = KEY_LEFT, right = KEY_RIGHT;
+            int cross = KEY_X, circle = KEY_C, square = KEY_Z, triangle = KEY_V;
+            int l1 = KEY_Q, r1 = KEY_E, l2 = KEY_ONE, r2 = KEY_THREE, l3 = KEY_LEFT_CONTROL, r3 = KEY_RIGHT_CONTROL;
+            int start = KEY_ENTER, select = KEY_RIGHT_SHIFT;
+            int stickUp = KEY_W, stickDown = KEY_S, stickLeft = KEY_A, stickRight = KEY_D;
+        };
+
+        const HostInputOptions &hostInputOptions()
+        {
+            static const HostInputOptions options = []
+            {
+                HostInputOptions o;
+                if (const char *g = std::getenv("PS2X_GAMEPAD"))
+                {
+                    const std::string v(g);
+                    if (v == "off")
+                        o.gamepad = -2;
+                    else if (v.size() == 1 && v[0] >= '0' && v[0] <= '3')
+                        o.gamepad = v[0] - '0';
+                }
+                if (const char *dz = std::getenv("PS2X_PAD_DEADZONE"))
+                    o.deadzone = std::clamp(static_cast<float>(std::atof(dz)), 0.0f, 0.9f);
+                if (const char *km = std::getenv("PS2X_KEYMAP"))
+                {
+                    const std::pair<const char *, int *> slots[] = {
+                        {"up", &o.up}, {"down", &o.down}, {"left", &o.left}, {"right", &o.right},
+                        {"cross", &o.cross}, {"circle", &o.circle}, {"square", &o.square}, {"triangle", &o.triangle},
+                        {"l1", &o.l1}, {"r1", &o.r1}, {"l2", &o.l2}, {"r2", &o.r2}, {"l3", &o.l3}, {"r3", &o.r3},
+                        {"start", &o.start}, {"select", &o.select},
+                        {"stick_up", &o.stickUp}, {"stick_down", &o.stickDown},
+                        {"stick_left", &o.stickLeft}, {"stick_right", &o.stickRight}};
+                    std::stringstream all(km);
+                    std::string item;
+                    while (std::getline(all, item, ','))
+                    {
+                        const size_t eq = item.find('=');
+                        if (eq == std::string::npos)
+                            continue;
+                        const std::string name = item.substr(0, eq);
+                        const int key = std::atoi(item.c_str() + eq + 1);
+                        for (const auto &[slotName, slot] : slots)
+                            if (name == slotName)
+                                *slot = key;
+                    }
+                }
+                return o;
+            }();
+            return options;
+        }
+
+        bool keyDown(int key) { return key > 0 && IsKeyDown(key); }
+
+        float applyDeadzone(float axis)
+        {
+            const float dz = hostInputOptions().deadzone;
+            if (std::fabs(axis) <= dz)
+                return 0.0f;
+            // Rescale so the stick still reaches full deflection.
+            return (axis > 0.0f ? axis - dz : axis + dz) / (1.0f - dz);
+        }
+
         uint8_t axisToByte(float axis)
         {
             axis = std::clamp(axis, -1.0f, 1.0f);
@@ -162,6 +231,11 @@ namespace ps2_stubs
 
         int findFirstGamepad()
         {
+            const int choice = hostInputOptions().gamepad;
+            if (choice == -2)
+                return -1;
+            if (choice >= 0)
+                return IsGamepadAvailable(choice) ? choice : -1;
             for (int i = 0; i < 4; ++i)
             {
                 if (IsGamepadAvailable(i))
@@ -189,10 +263,10 @@ namespace ps2_stubs
             // D-Pad -> LEFT_FACE_*, Cross/Circle/Square/Triangle -> RIGHT_FACE_*
             // L1/R1 -> TRIGGER_1, L2/R2 -> TRIGGER_2, L3/R3 -> THUMB
             // Select/Start -> MIDDLE_LEFT/MIDDLE_RIGHT
-            state.lx = axisToByte(GetGamepadAxisMovement(gamepad, GAMEPAD_AXIS_LEFT_X));
-            state.ly = axisToByte(GetGamepadAxisMovement(gamepad, GAMEPAD_AXIS_LEFT_Y));
-            state.rx = axisToByte(GetGamepadAxisMovement(gamepad, GAMEPAD_AXIS_RIGHT_X));
-            state.ry = axisToByte(GetGamepadAxisMovement(gamepad, GAMEPAD_AXIS_RIGHT_Y));
+            state.lx = axisToByte(applyDeadzone(GetGamepadAxisMovement(gamepad, GAMEPAD_AXIS_LEFT_X)));
+            state.ly = axisToByte(applyDeadzone(GetGamepadAxisMovement(gamepad, GAMEPAD_AXIS_LEFT_Y)));
+            state.rx = axisToByte(applyDeadzone(GetGamepadAxisMovement(gamepad, GAMEPAD_AXIS_RIGHT_X)));
+            state.ry = axisToByte(applyDeadzone(GetGamepadAxisMovement(gamepad, GAMEPAD_AXIS_RIGHT_Y)));
 
             setButton(state, kPadBtnUp, IsGamepadButtonDown(gamepad, GAMEPAD_BUTTON_LEFT_FACE_UP));
             setButton(state, kPadBtnDown, IsGamepadButtonDown(gamepad, GAMEPAD_BUTTON_LEFT_FACE_DOWN));
@@ -223,29 +297,29 @@ namespace ps2_stubs
                 return;
             }
 
-            // Keyboard mapping (PS2 -> keys):
-            // D-Pad: arrows, Square/Cross/Circle/Triangle: Z/X/C/V
-            // L1/R1: Q/E, L2/R2: 1/3, Start/Select: Enter/RightShift
-            // L3/R3: LeftCtrl/RightCtrl, Analog left: WASD
-            setButton(state, kPadBtnUp, IsKeyDown(KEY_UP));
-            setButton(state, kPadBtnDown, IsKeyDown(KEY_DOWN));
-            setButton(state, kPadBtnLeft, IsKeyDown(KEY_LEFT));
-            setButton(state, kPadBtnRight, IsKeyDown(KEY_RIGHT));
+            // Keyboard mapping: PS2X_KEYMAP (hostInputOptions), defaults are the original mapping
+            // (arrows D-pad, Z/X/C/V Square/Cross/Circle/Triangle, Q/E L1/R1, 1/3 L2/R2,
+            // Enter/RightShift Start/Select, LeftCtrl/RightCtrl L3/R3, WASD left stick).
+            const HostInputOptions &k = hostInputOptions();
+            setButton(state, kPadBtnUp, keyDown(k.up));
+            setButton(state, kPadBtnDown, keyDown(k.down));
+            setButton(state, kPadBtnLeft, keyDown(k.left));
+            setButton(state, kPadBtnRight, keyDown(k.right));
 
-            setButton(state, kPadBtnSquare, IsKeyDown(KEY_Z));
-            setButton(state, kPadBtnCross, IsKeyDown(KEY_X));
-            setButton(state, kPadBtnCircle, IsKeyDown(KEY_C));
-            setButton(state, kPadBtnTriangle, IsKeyDown(KEY_V));
+            setButton(state, kPadBtnSquare, keyDown(k.square));
+            setButton(state, kPadBtnCross, keyDown(k.cross));
+            setButton(state, kPadBtnCircle, keyDown(k.circle));
+            setButton(state, kPadBtnTriangle, keyDown(k.triangle));
 
-            setButton(state, kPadBtnL1, IsKeyDown(KEY_Q));
-            setButton(state, kPadBtnR1, IsKeyDown(KEY_E));
-            setButton(state, kPadBtnL2, IsKeyDown(KEY_ONE));
-            setButton(state, kPadBtnR2, IsKeyDown(KEY_THREE));
+            setButton(state, kPadBtnL1, keyDown(k.l1));
+            setButton(state, kPadBtnR1, keyDown(k.r1));
+            setButton(state, kPadBtnL2, keyDown(k.l2));
+            setButton(state, kPadBtnR2, keyDown(k.r2));
 
-            setButton(state, kPadBtnStart, IsKeyDown(KEY_ENTER));
-            setButton(state, kPadBtnSelect, IsKeyDown(KEY_RIGHT_SHIFT));
-            setButton(state, kPadBtnL3, IsKeyDown(KEY_LEFT_CONTROL));
-            setButton(state, kPadBtnR3, IsKeyDown(KEY_RIGHT_CONTROL));
+            setButton(state, kPadBtnStart, keyDown(k.start));
+            setButton(state, kPadBtnSelect, keyDown(k.select));
+            setButton(state, kPadBtnL3, keyDown(k.l3));
+            setButton(state, kPadBtnR3, keyDown(k.r3));
 
             if (!allowAnalog)
             {
@@ -254,13 +328,13 @@ namespace ps2_stubs
 
             float ax = 0.0f;
             float ay = 0.0f;
-            if (IsKeyDown(KEY_D))
+            if (keyDown(k.stickRight))
                 ax += 1.0f;
-            if (IsKeyDown(KEY_A))
+            if (keyDown(k.stickLeft))
                 ax -= 1.0f;
-            if (IsKeyDown(KEY_S))
+            if (keyDown(k.stickDown))
                 ay += 1.0f;
-            if (IsKeyDown(KEY_W))
+            if (keyDown(k.stickUp))
                 ay -= 1.0f;
 
             if (ax != 0.0f || ay != 0.0f)
