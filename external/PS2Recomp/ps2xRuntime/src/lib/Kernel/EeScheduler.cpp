@@ -1,5 +1,6 @@
 #include "runtime/ee_scheduler.h"
 #include "runtime/wait_stats.h"
+#include "runtime/ps2_gs_irq.h"
 #include "runtime/gs/gs_draw_log.h"
 
 #include "ps2_log.h"
@@ -1885,6 +1886,12 @@ void EeScheduler::processEvent(const EeEvent &event)
         requestStop();
         break;
     case EeEventType::VBlankStart:
+        // Work kicked before this VSync completes before it, as when VIF1/VU1 ran on the EE.
+        if (m_runtime.memory().vif1WorkerActive())
+        {
+            m_runtime.memory().syncVif1Worker();
+            ps2PollGsInterrupt(&m_runtime);
+        }
         ++m_vsyncTick;
         m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
         ps2x::gsdebug::publishVSyncTick(m_vsyncTick);
@@ -2015,6 +2022,15 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
 
 void EeScheduler::waitForEvent()
 {
+    // Nothing runnable: the guest may be waiting for an interrupt produced by queued VIF1/GIF
+    // work (GS FINISH/SIGNAL), which does not wake this wait. Complete that work first.
+    if (m_runtime.memory().vif1WorkerActive())
+    {
+        m_runtime.memory().syncVif1Worker();
+        ps2PollGsInterrupt(&m_runtime);
+        if (!m_pendingInvocations.empty())
+            return;
+    }
     std::unique_lock lock(m_eventMutex);
     if (!m_events.empty() || m_stopRequested.load(std::memory_order_acquire))
     {

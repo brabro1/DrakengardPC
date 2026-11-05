@@ -113,6 +113,7 @@ namespace ps2_stubs
             {
                 return;
             }
+            runtime->memory().syncVif1Worker(); // GS register writes from the EE: keep packet order
 
             runtime->gs().writeRegister(static_cast<uint8_t>(clear.testa.reg & 0xFFu), clear.testa.value);
             runtime->gs().writeRegister(static_cast<uint8_t>(clear.prim.reg & 0xFFu), clear.prim.value);
@@ -745,6 +746,7 @@ namespace ps2_stubs
         mem.processPendingTransfers();
 
         ps2TraceGuestRangeWrite(rdram, dstAddr, totalImageBytes, "sceGsExecStoreImage", ctx);
+        mem.syncVif1Worker(); // the readback setup packet went through the VIF1/GIF worker
         runtime->gs().consumeLocalToHostBytes(dst, totalImageBytes);
         runtime->guestFree(pktAddr);
 

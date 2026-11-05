@@ -1,6 +1,7 @@
 // Based on Blackline Interactive implementation
 #include "runtime/ps2_memory.h"
 #include "runtime/vu_aot.h"
+#include "runtime/vif1_scan.h"
 #include <cstring>
 #include <algorithm>
 #include <cstdlib>
@@ -752,6 +753,189 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         else
         {
             continue;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// EE-side scan of queued VIF1/GIF data for GS interrupt events (runtime/vif1_scan.h). Must parse
+// exactly like PS2Memory::processVIF1Data above and the GS frontend (GIF tag walk).
+// ---------------------------------------------------------------------------------------------
+namespace ps2x::vif1scan
+{
+    namespace
+    {
+        State g_eeState;
+
+        void scanGifPacket(const uint8_t *data, uint32_t sizeBytes, bool path3, Result &out)
+        {
+            uint32_t offset = 0;
+            while (offset + 16u <= sizeBytes)
+            {
+                uint64_t tagLo;
+                uint64_t tagHi;
+                std::memcpy(&tagLo, data + offset, 8);
+                std::memcpy(&tagHi, data + offset + 8, 8);
+                offset += 16u;
+                const uint32_t nloop = static_cast<uint32_t>(tagLo & 0x7FFFu);
+                const uint32_t flg = static_cast<uint32_t>((tagLo >> 58) & 0x3u);
+                uint32_t nreg = static_cast<uint32_t>((tagLo >> 60) & 0xFu);
+                if (nreg == 0u)
+                    nreg = 16u;
+                if (flg == 0u) // PACKED
+                {
+                    for (uint32_t loop = 0; loop < nloop; ++loop)
+                    {
+                        for (uint32_t r = 0; r < nreg; ++r)
+                        {
+                            if (offset + 16u > sizeBytes)
+                                return;
+                            if (((tagHi >> (r * 4u)) & 0xFu) == 0xEu)
+                            {
+                                const uint8_t addr = data[offset + 8];
+                                if (addr == 0x61u) // FINISH
+                                {
+                                    if (path3)
+                                        out.needsSync = true;
+                                    else
+                                        ++out.finishes;
+                                }
+                                else if (addr == 0x60u || addr == 0x62u) // SIGNAL, LABEL
+                                {
+                                    out.needsSync = true;
+                                }
+                            }
+                            offset += 16u;
+                        }
+                    }
+                }
+                else if (flg == 1u) // REGLIST: registers 0x00-0x0F only
+                {
+                    offset += ((nloop * nreg + 1u) & ~1u) * 8u;
+                }
+                else // IMAGE / disabled
+                {
+                    offset += nloop * 16u;
+                }
+            }
+        }
+
+        // Source bytes of an UNPACK, as vifUnpack computes them.
+        uint32_t unpackSourceBytes(uint32_t cycle, uint8_t opcode, uint8_t num)
+        {
+            const uint32_t vn = (opcode >> 2) & 0x3u;
+            const uint32_t vl = opcode & 0x3u;
+            const uint32_t components = vn + 1u;
+            uint32_t bitsPerComponent = 32u;
+            if (vl == 1u)
+                bitsPerComponent = 16u;
+            else if (vl == 2u)
+                bitsPerComponent = 8u;
+            else if (vl == 3u)
+                bitsPerComponent = (vn == 3u) ? 4u : 16u;
+            const uint32_t bitsPerVector = (vl == 3u && vn == 3u) ? 16u : (components * bitsPerComponent);
+            const uint32_t bytesPerVector = (bitsPerVector + 7u) / 8u;
+            const uint32_t writeVectorCount = (num == 0u) ? 256u : static_cast<uint32_t>(num);
+            uint32_t cl = cycle & 0xFFu;
+            uint32_t wl = (cycle >> 8) & 0xFFu;
+            if (cl == 0u)
+                cl = 1u;
+            if (wl == 0u)
+                wl = 1u;
+            uint32_t sourceVectorCount = writeVectorCount;
+            if (cl < wl)
+            {
+                const uint32_t fullBlocks = writeVectorCount / wl;
+                uint32_t remainder = writeVectorCount % wl;
+                if (remainder > cl)
+                    remainder = cl;
+                sourceVectorCount = fullBlocks * cl + remainder;
+            }
+            return ((sourceVectorCount * bytesPerVector) + 3u) & ~3u;
+        }
+    }
+
+    State &eeState() { return g_eeState; }
+
+    void scanGifPath3(const uint8_t *data, uint32_t sizeBytes, Result &out)
+    {
+        if (data && sizeBytes >= 16u)
+            scanGifPacket(data, sizeBytes, true, out);
+    }
+
+    void scanVif1(State &state, const uint8_t *data, uint32_t sizeBytes, Result &out)
+    {
+        if (!data || sizeBytes == 0u)
+            return;
+        uint32_t pos = 0;
+        while (pos + 4 <= sizeBytes)
+        {
+            if (state.pendingImageQwc != 0u)
+            {
+                const uint32_t availableQw = (sizeBytes - pos) / 16u;
+                if (availableQw == 0u)
+                    break;
+                const uint32_t chunkQw = std::min<uint32_t>(state.pendingImageQwc, availableQw);
+                pos += chunkQw * 16u;
+                state.pendingImageQwc -= chunkQw;
+                continue;
+            }
+            uint32_t cmd;
+            std::memcpy(&cmd, data + pos, 4);
+            pos += 4;
+            const uint8_t opcode = (cmd >> 24) & 0x7F;
+            const uint16_t imm = cmd & 0xFFFF;
+            const uint8_t num = (cmd >> 16) & 0xFF;
+
+            if (opcode == VIF_STCYCL)
+            {
+                state.cycle = imm;
+            }
+            else if (opcode == VIF_STMASK)
+            {
+                if (pos + 4 > sizeBytes)
+                    break;
+                pos += 4;
+            }
+            else if (opcode == VIF_STROW || opcode == VIF_STCOL)
+            {
+                if (pos + 16 > sizeBytes)
+                    break;
+                pos += 16;
+            }
+            else if (opcode == VIF_MPG)
+            {
+                pos += ((num == 0u) ? 256u : static_cast<uint32_t>(num)) * 8u;
+                if (pos > sizeBytes)
+                    break;
+            }
+            else if (opcode == VIF_DIRECT || opcode == VIF_DIRECTHL)
+            {
+                uint32_t qwCount = imm;
+                if (qwCount == 0)
+                    qwCount = 65536;
+                const uint32_t availableQw = (sizeBytes - pos) / 16u;
+                const bool truncated = qwCount > availableQw;
+                if (qwCount > availableQw)
+                    qwCount = availableQw;
+                if (qwCount > 0)
+                {
+                    scanGifPacket(data + pos, qwCount * 16u, false, out);
+                    const uint32_t pendingImageQw = pendingGifImageQwc(data + pos, qwCount * 16u);
+                    if (pendingImageQw != 0u)
+                        state.pendingImageQwc = pendingImageQw;
+                }
+                pos += qwCount * 16;
+                if (truncated)
+                    break;
+            }
+            else if ((opcode & 0x60) == 0x60)
+            {
+                pos += unpackSourceBytes(state.cycle, opcode, num);
+                if (pos > sizeBytes)
+                    break;
+            }
+            // NOP, OFFSET, BASE, ITOP, STMOD, MSKPATH3, MARK, FLUSH*, MSCAL*, MSCNT: no payload.
         }
     }
 }

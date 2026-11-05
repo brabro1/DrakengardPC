@@ -1701,7 +1701,7 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
             if (vuaot::ProgramFn fn = lookup(m_state.pc))
             {
                 flushPipelines();
-                static vuaot::Context ctx;
+                static thread_local vuaot::Context ctx; // VU0 runs on the EE thread, VU1 on the VIF1 worker
                 ctx.s = &m_state;
                 ctx.mem = vuData;
                 ctx.memMask = dataSize - 1u;

@@ -14,25 +14,35 @@ Tested setup: Windows 11 Pro 26300, i5-12400F, RTX 3060, Drakengard (USA) SLUS-2
 | Reproducible regeneration from the user's disc | implemented | `tools/recomp.py`; individual steps verified |
 | Boot: crt0, kernel init, IOP module loading | verified | 8 IRX loaded and started |
 | Disc access at real ISO sectors (EE + IOP) | verified (EE search) | IOP search path implemented, not yet exercised |
-| Interrupts: DMAC, GS FINISH/SIGNAL, timers, VSync | implemented | GS interrupt added this session; timers/VSync from PS2Recomp |
+| Interrupts: DMAC, GS FINISH/SIGNAL, timers, VSync | verified | boot to gameplay depends on all of them |
 | First game screen (memory-card warning dialog) | verified | renders ~4 s after boot (run 7) |
 | Boot logos (Square Enix, Cavia, Project Dragonsphere) | verified | session 2 |
 | Title screen | verified | reached at VSync tick ~1093 (≈110 s host time) |
 | Main menu and New Game difficulty prompt | verified | via scripted input |
 | Starting a new game | verified | prologue text, "Chapter 1 — Beginnings", mission briefing (session 3) |
-| First mission (ground combat) | implemented, not verifiable yet | terrain, Caim, HUD and objective map render at ~2 VSync/s; combat not yet verified |
+| First mission (ground combat) | verified (partly) | walking and sword attacks with HUD and map at full speed (session 5); fighting enemies not yet exercised |
 | Ground combat, dragon flight, story, endings | planned | |
 | Audio (EzSound on IOP → host audio) | planned | driver runs on IOP; no output path |
 | FMV playback (IPU MPEG-2) | planned | FFmpeg linked; untested |
 | Memory card detection (empty card, no save yet) | verified | libmc first-probe and GetEntSpace semantics fixed |
 | Memory card saves + backups | planned | host folder `work/memcard/mc0`; no save written yet |
 
+## Native execution and speed
+
+| Feature | State | Notes |
+|---|---|---|
+| EE program as native code | verified | 8,315 recompiled functions |
+| VU1/VU0 microprograms as native code | verified | `tools/vu_recomp.py`: 53 programs, 7,484 instruction pairs, 0 unsupported; cycle model of PS2Recomp's VU interpreter, with static stall and flag-liveness elimination (session 5) |
+| GS on the GPU | verified | paraLLEl-GS (Vulkan compute) on its own thread; `PS2X_GS_RENDERER=cpu` keeps the software GS |
+| VIF1/VU1 on a worker thread | verified | game speed unchanged (166 DMA kicks/VSync), ~3× the idle headroom; GS FINISH latched at kick time as before; `PS2X_VU1_THREAD=0` disables (session 5) |
+| Full speed (60 VSync/s) | verified (first mission) | menus, title, intro and first mission; see PROGRESS.md for measurements |
+
 ## Display
 
 | Feature | State | Notes |
 |---|---|---|
-| Windowed output (640×448, software GS) | implemented | correctness reference only; interlaced field framebuffers line-doubled (session 4) |
-| Higher internal resolution (1080p/1440p/4K) | planned | needs hardware GS renderer |
+| Windowed output (640×448) | verified | GPU renderer by default; software GS kept as the correctness reference |
+| Higher internal resolution (1080p/1440p/4K) | planned | paraLLEl-GS supersampling (`PS2X_GS_SSAA`) exists; true upscaling needs a draw-level renderer |
 | Separate internal/output resolution | planned | |
 | Widescreen / ultrawide | planned | hook point identified: `sceVu0ViewScreenMatrix` (`0x2FCFD0`) |
 | HUD positioning/scaling | planned | |
@@ -83,9 +93,9 @@ Tested setup: Windows 11 Pro 26300, i5-12400F, RTX 3060, Drakengard (USA) SLUS-2
 | Interrupt handler registration log | verified | `[irq:add]` |
 | Frame dump to PNG | verified | `PS2X_FRAME_DUMP_DIR` |
 | Bounded automated runs | verified | `--max-seconds` |
-| Pipeline invariant tests | verified | `tests/test_pipeline.py` (6 tests) |
+| Pipeline invariant tests | verified | `tests/test_pipeline.py` (7 tests) |
 | Function trace hooks + memory watch | verified | `DKG_TRACE_FUNCS`, `DKG_TRACE_MEM`, `DKG_TRACE_SKIP` |
 | Position samples without call tracing | verified | `[run:sample]` every 300 host frames, with VSync/s and IOP/VU1/GS wall-time shares |
-| Sampling profiler | verified | `DKG_PROFILE` + `tools/profile_report.py` |
+| Sampling profiler | verified | `DKG_PROFILE` (+ `DKG_PROFILE_DELAY`, DLL caller capture) + `tools/profile_report.py` |
 | Automated boot regression | verified | `tools/boot_test.py` (boot, title, progress, stall checks) |
 | GS draw log, pixel probe, VU clip trace/dump, VIF watch | verified | env switches in CLAUDE.md; `tools/vu_disasm.py` |

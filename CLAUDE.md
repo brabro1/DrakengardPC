@@ -53,6 +53,12 @@ new headers. VU microprograms: `python -I tools/vu_recomp.py work/disc/SLUS_207.
 - Renderer: paraLLEl-GS (Vulkan compute) by default; `PS2X_GS_RENDERER=cpu` selects the
   software GS, `PS2X_GS_SSAA=N` supersampling. Compiled VU programs: `PS2X_VU_AOT=0` disables
   them (interpreter only); `PS2X_VU_AOT_ENTRY_LOG=1` logs unpredicted entry pcs.
+- VIF1/VU1/GIF worker thread (`src/lib/ps2_vif1_worker.cpp`): `PS2X_VU1_THREAD=0` runs VIF1 and
+  VU1 on the EE thread again, `=sync` waits for the worker after every DMA kick (A/B tests).
+  Anything on the EE side that reads VIF1/GIF registers, VU1 memory, GS CSR or GS readback must
+  call `PS2Memory::syncVif1Worker()` first. Measure game speed with DMA kicks per VSync
+  (`dma=` in `[run:sample]`, ~166 in the first mission), not only VSync/s.
+  `PS2X_GS_FINISH_TRACE=1` logs which GIF path delivers SIGNAL/FINISH.
 - Rendering diagnostics (CPU renderer; all off unless set):
   `PS2X_GS_DRAW_LOG=<firstTick>:<lastTick>:<file>`, `PS2X_GS_PROBE=x,y`,
   `PS2X_VU_CLIP_TRACE=<file>[:<perSite>]`, `PS2X_VU_DUMP=<pcHex>:<dir>`

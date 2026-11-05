@@ -12,6 +12,7 @@ namespace ps2x::waitstats
         Pacing = 0, // EE scheduler: event reached before its wall-clock deadline
         Idle,       // EE scheduler: no runnable guest thread
         GsDrain,    // GS backend: caller waits for the GS worker queue to empty
+        Vif1Sync,   // EE waits for the VIF1/VU1 worker (VIF1/GIF registers, VU1 memory, readback)
         Count
     };
     inline std::atomic<uint64_t> g_waitMicros[Count]{};

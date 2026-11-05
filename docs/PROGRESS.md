@@ -6,8 +6,8 @@
 |---|---|---|
 | A — Inspection and feasibility | **done** | RESEARCH.md: build identity, disc inventory, ELF layout, ISA census, tool audit, architecture choice |
 | B — Native execution foundation | **done** | 8,315 functions translated (0 decode failures); `DrakengardPC.exe` executes original game code through IOP init, disc search and interrupt setup into the frame loop (logs below) |
-| C — Boot and title screen | **reached, with known issues** | Square Enix → Cavia → Project Dragonsphere logos → title "PRESS START BUTTON"; scripted input opens the main menu and the New Game difficulty prompt (session 2). Known issues: game runs at ~38% speed, no audio (interlaced presentation fixed in session 4) |
-| D — Playable vertical slice | in progress | New Game → prologue → Chapter 1 → briefing → first mission: terrain, castle skyline and Caim render with HUD, radio message, objective map and hint at ~2 VSync/s; gameplay input not yet verified |
+| C — Boot and title screen | **reached, with known issues** | Square Enix → Cavia → Project Dragonsphere logos → title "PRESS START BUTTON"; scripted input opens the main menu and the New Game difficulty prompt (session 2). Known issues: no audio (speed fixed in session 5) |
+| D — Playable vertical slice | in progress | first mission at full speed (60 VSync/s) on the reference PC: walking and sword attacks verified (session 5); fighting enemies, audio and saves not yet |
 | E — Compatibility and timing | not started | timing architecture sketched in ARCHITECTURE.md |
 | F — Modern rendering and mods | not started | |
 | G — Complete-game verification | not started | |
@@ -243,24 +243,112 @@ d-pad up is held the view pitches up to the cloud sky and castle skyline and Cai
 changes, and ✕/□ presses are delivered. Frames every 30 ticks do not establish walking or an
 attack animation. `boot_test.py` 4/4; `ps2x_tests` 455/455; pipeline tests 7/7.
 
+### 2026-11-05 — session 5 (full speed: GPU GS, compiled VU code, threads)
+
+Goal: the first mission at full speed (60 VSync/s, the NTSC field rate) on the reference PC.
+All speeds are `[run:sample]` VSync/s in the first mission (scripted with the pad script in
+CLAUDE.md); "slack" is the host time the EE scheduler spent waiting for wall-clock pacing,
+i.e. idle headroom at full speed.
+
+**What changed, in order, with the measured mission speed after each step**
+
+| Step | Mission VSync/s |
+|---|---|
+| Start of session (session-4 runtime, software GS, interpreted VU1) | ~2 |
+| GS on the GPU: paraLLEl-GS (Vulkan compute, LGPL-3.0+) as the default renderer. Raw GIF packets per path, privileged registers copied at VSync, scanout through `vsync()`, 3-slot readback ring. `GsSetCrt`/`sceGsResetGraph` now program SMODE1 (paraLLEl-GS produced no image with SMODE1 = 0). | 4 |
+| VU1 microprograms compiled ahead of time (`tools/vu_recomp.py`): every MPG payload in `.vudata` becomes one C++ function (53 programs, 7,484 pairs, 0 unsupported), matched at upload by address + FNV-1a hash. Timing mirrors `VU1Interpreter` (per-lane ready cycles, 4-cycle flag latency, Q/P latencies, branch-delay VI hazard, E-bit, XGKICK). | 15–19 |
+| VU0 microprograms from `.vutext` compiled the same way | 22 |
+| Frame wait loop at `0x27DE1C` (inferred: polls the frame-done flag) charges 2,048 EE cycles per pass (`ps2x::registerEeWaitLoop`) instead of re-running for every timer tick; EE timers accrue in batches | 27–36 |
+| GS backend on its own thread (like PCSX2's MTGS), pipelined readback | 36–40 |
+| FMAC flag fast path for normal results | 40–44 |
+| No allocation per GIF packet (arbiter slot reuse, byte-batch GS queue) | 46–48 |
+| Static stall elimination in the generated VU code (see below) | 49–53 |
+| `resetScheduler` skips clearing clean interpreter pipelines (it ran on every MSCAL); SSE-only rounding mode switch; GS frontend only scans for SIGNAL/FINISH/LABEL/TRX registers in raw-GIF mode; VIF UNPACK fast path; MPG upload matching by memcmp | **59–60**, ~10% slack |
+| MAC/status flag liveness in VU1 programs | 59–60, 14–18% slack |
+| VIF1/VU1/GIF worker thread with exact FINISH latching (below) | 59–60, 43–45% slack |
+
+**Static stall elimination.** Each pair issues at least one cycle after the previous one, so a
+read of a register written ≥ latency pairs earlier on the same straight-line path cannot stall,
+and a read ≥ 3 pairs after the run's entry point cannot see an older in-flight write (VF/VI
+latencies are ≤ 4; ACC latency is 1, so ACC never stalls). The generator computes the entry
+points of each program (program start, static branch targets, BAL/JALR return addresses,
+E-bit resume points, other programs' end addresses and cross-program branch targets) and drops
+provably satisfied checks: 26,437 → 9,423 run-time checks. A dispatch to any other pc first waits
+for every in-flight write (`vuaot::stallAll`); `[run:sample] aot-entry-stalls` counts those, and
+it is 0 in the mission (a first version missed a branch from program 34 back into program 33 and
+showed ~43,000 per 5 s, with ~12% more VU cycles).
+
+**Flag liveness.** A census of all 53 programs: no program reads the status flag; VU1 programs
+read MAC only with FMAND/FMEQ/FMOR (≤ 5 per program); the EE cannot read VU1 flags. A VU1 FMAC's
+MAC/status result is dead when a later FMAC on the same path overwrites it before any MAC read
+or departure can observe it (4-pair window). 1,959 of 3,576 flag computations are removed; the
+zero/denormal/overflow value fix-up stays. VU0 programs keep all flags (the EE reads them with
+CFC2). Compiled VU1 cycles per VSync were unchanged by both steps (~0.95 M per VSync in the mission
+intro), as expected when only provably redundant work is removed.
+
+**Gameplay.** The pad script now dismisses the R3 hint (✕ at ticks 4900–5200), holds d-pad up
+and presses □ every 25 ticks: Caim walks toward the fortress and swings his sword, with the HUD,
+trees and fortress drawn (frames at ticks 8253–13756). No enemy was reached.
+
+**Measured (i5-12400F, RTX 3060, idle machine, before the VIF1 worker).** Title, menus and intro: 60. First
+mission while walking and attacking: 59–60 with 600–900 ms slack per 5 s. Approaching the
+fortress gate: the game thread is fully busy and the rate swings between 56 and 62 (average
+~59). Profile of the game thread in the mission: compiled VU1 code ~55%, VIF/GIF/GS frontend
+~8%, EE game code and runtime the rest.
+
+**VIF1/VU1 worker thread** (`ps2xRuntime/src/lib/ps2_vif1_worker.cpp`, like PCSX2's MTVU).
+VIF1 DMA data (UNPACK, MPG, MSCAL → compiled VU1 programs, XGKICK, DIRECT) and GIF PATH3 data
+are copied at DMA kick time and processed on one worker thread in kick order; DMA completion is
+still reported at kick time. The EE waits for the worker before it reads or writes VIF1/GIF
+registers or FIFOs, VU1 memory (EE loads/stores, DMA from VU memory), GS CSR/SIGLBLID, GS
+readback, EE-side GS register writes, the native GIF fast paths, and when it is only waiting
+(registered wait loop, scheduler idle, start of VBlank).
+
+The first version kept full speed in VSync/s but the game advanced ~18% slower: DMA kicks per
+VSync fell from 166.0 to 137.5 and Caim was visibly behind at the same tick. A/B evidence:
+`PS2X_VU1_THREAD=0` → 166.0, `=sync` (worker, wait after every kick) → 166.0, asynchronous →
+137.5. `PS2X_GS_FINISH_TRACE=1` showed the game's GS FINISH (unmasked, IMR `0x7D00`) arrives
+once per frame on PATH2 in a 32-byte VIF1 DIRECT packet; when VIF1 ran on the EE, FINISH was
+latched during the kick and the interrupt handler ran right after it. Waiting for the worker at
+that kick restored 166 DMA/VSync but removed all overlap (the FINISH kick ends the frame).
+Final design (`runtime/vif1_scan.h`): the EE parses every chunk it queues with the same rules as
+`processVIF1Data` (STCYCL for UNPACK sizes, DIRECT image continuation) and the GS frontend's GIF
+walk, latches each PATH2 FINISH in CSR at kick time and records a credit; the frontend consumes
+the credit instead of latching that FINISH again. SIGNAL/LABEL and PATH3 FINISH make the EE wait
+instead. The DIRECT payloads sit at 8 mod 16 inside DMA chain copies (tag VIF codes), which a
+first quadword-aligned pattern scan missed.
+
+Measured with another emulator using ~3 of the 12 hardware threads the whole time (absolute
+headroom is lower than on an idle machine, so runs were interleaved): worker on 166.0
+DMA/VSync, 43–45% idle; worker off 165.9, 11–18% idle. A 240 s gameplay run with the worker:
+59–60 VSync/s throughout, minimum 13% idle at the fortress gate (where the synchronous build
+dropped to 56 with no idle time); frames correct up to the fortress gate.
+
+Also: the GS backend thread now registers with Granite (each run logged 80,000–130,000
+"Thread does not exist in thread manager" lines before).
+
+Tests: `ps2x_tests` 455/455; pipeline tests 7/7. A test-only build error was fixed (runtime
+includes were inside `#if PS2X_HAVE_PARALLEL_GS`).
+
+Repository: docs moved to `docs/`, README rewritten for players and builders, personal paths
+removed from tracked files (machine notes go to the ignored `CLAUDE.local.md`), GPL-3.0
+`LICENSE` added, third-party notices for paraLLEl-GS, Granite, volk and Vulkan-Headers.
+
 ## Main blockers
 
-1. **Gameplay not yet verified**: locomotion and attacks are not confirmed (d-pad input moves
-   the view; analog-stick scripting is not available yet).
-2. **Speed**: the first mission runs at ~2 VSync/s (VU1 interpreter ~70%, software GS ~40%
-   of the guest thread); the title ~16-20 VSync/s. Needs faster VU1 (ahead-of-time translation
-   of the fixed microprogram set), the GS off the guest thread, then the hardware renderer.
-3. **Timing catch-up**: after long stalls the scheduler delivered missed VBlanks back to back
-   (~187 VSync/s once); VBlank pacing should resynchronise to wall time.
-4. **Audio**: none reaches the host.
+1. **Audio**: none reaches the host (EzSound runs on the IOP; no output path).
+2. **Gameplay coverage**: only the first mission's opening is verified; enemies, dragon flight,
+   later missions, FMV and saves are untested.
+3. **Speed headroom in big battles**: unmeasured. The worker build leaves ~40% idle time in
+   the first mission; the next lever is SIMD code generation for VU FMAC lanes.
+4. **Timing catch-up**: after long host stalls (e.g. a hidden window) VBlanks are delivered
+   back to back (69/s seen after a stall); pacing should resynchronise to wall time.
 
 ## Next actions
 
-1. Audit the remaining 223 native stubs for register-convention or semantic mismatches like
-   `_sceVu0ecossin` (libm internals `__kernel_sinf/cosf`, `__ieee754_rem_pio2f` are host
-   approximations).
-2. Drive movement/attack past the intro with the pad script and verify combat.
-3. Profile VU1 in the mission; plan ahead-of-time translation of its microprograms, then the
-   asynchronous GS (queue GIF packets; sync on FINISH/SIGNAL, readback, presentation).
+1. Drive the pad script into combat (enemies near the fortress) and measure speed there.
+2. Audio (EzSound on the IOP → host mixer).
+3. Analog-stick scripting in `PS2X_PAD_SCRIPT` for movement tests.
 4. Resynchronise VBlank deadlines after stalls.
-5. Audio (EzSound on the IOP → host mixer).
+5. Rendering features on the GPU path: internal resolution, widescreen
+   (`sceVu0ViewScreenMatrix`), then a draw-level renderer for DLSS/FSR.

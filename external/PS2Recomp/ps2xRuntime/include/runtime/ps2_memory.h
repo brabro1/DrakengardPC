@@ -343,6 +343,20 @@ public:
     const uint8_t *getVU0Data() const { return m_vu0Data; }
 
     bool isPath3Masked() const { return m_path3Masked; }
+
+    // VIF1/GIF worker thread (src/lib/ps2_vif1_worker.cpp), like PCSX2's MTVU: VIF1 DMA data
+    // (UNPACK, MPG, MSCAL -> VU1 programs, XGKICK, DIRECT) and GIF PATH3 DMA data are copied
+    // at kick time and processed on the worker in kick order. The EE thread waits for it
+    // (syncVif1Worker) before it touches VIF1/GIF registers, VU1 memory or GS readback.
+    void startVif1Worker();
+    void stopVif1Worker();
+    void syncVif1Worker() const; // no-op without a worker, or when called on the worker
+    bool vif1WorkerActive() const { return m_vif1Worker != nullptr; }
+    bool onVif1WorkerThread() const;
+    // Waits for the worker when queued work may raise a GS interrupt (SIGNAL/FINISH).
+    void syncVif1WorkerIfGsInterrupt();
+    // Called on the EE thread before each batch of VIF1/GIF work is queued.
+    void setVif1EnqueueHook(std::function<void()> hook) { m_vif1EnqueueHook = std::move(hook); }
     void flushMaskedPath3Packets(bool drainImmediately = true);
 
     void submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately = true, bool path2DirectHl = false);
@@ -467,6 +481,19 @@ public:
     uint8_t *resolveDmaMemory(uint32_t address, uint32_t bytes);
     void completeDmacChannel(uint32_t channelBase, uint32_t cause);
     void queueCompletedDmacCause(uint32_t cause);
+
+    struct Vif1Worker;
+    Vif1Worker *m_vif1Worker = nullptr;
+    bool m_vif1GsIrqPending = false;
+    std::function<void()> m_vif1EnqueueHook;
+    enum Vif1WorkKind : uint32_t
+    {
+        Vif1WorkVif1Data = 0, // processVIF1Data
+        Vif1WorkGifPath3 = 1, // submitGifPacket(Path3, ..., drainImmediately = false)
+        Vif1WorkGifDrain = 2, // GIF arbiter drain
+    };
+    void enqueueVif1Work(uint32_t kind, const uint8_t *data, uint32_t size);
+    void runVif1Work(uint32_t kind, const uint8_t *data, uint32_t size);
 };
 
 #endif // PS2_MEMORY_H

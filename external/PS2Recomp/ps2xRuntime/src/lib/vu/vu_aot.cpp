@@ -64,7 +64,7 @@ namespace vuaot
         Owner g_maps[2][kVu1Pairs];
         // Payload of each program once an upload matched its hash: later uploads are compared
         // with memcmp (vectorised) instead of re-hashing byte by byte.
-        std::vector<std::vector<uint8_t>> g_verified;
+        std::vector<std::vector<uint8_t>> g_verified[2]; // per unit: VU0 (EE thread) and VU1 (VIF1 worker)
         uint64_t g_matched = 0, g_unmatched[2] = {0, 0};
 
         void onUpload(uint32_t unit, uint32_t destBytes, const uint8_t *data, uint32_t bytes);
@@ -102,8 +102,9 @@ namespace vuaot
         if (programs().empty() || bytes == 0u)
             return;
         const auto &all = programs();
-        if (g_verified.size() != all.size())
-            g_verified.resize(all.size());
+        std::vector<std::vector<uint8_t>> &verified = g_verified[unit & 1u];
+        if (verified.size() != all.size())
+            verified.resize(all.size());
         int32_t match = -1;
         uint64_t hash = 0;
         bool hashed = false;
@@ -111,7 +112,7 @@ namespace vuaot
         {
             if (all[i].base != destBytes || all[i].bytes != bytes)
                 continue;
-            const std::vector<uint8_t> &known = g_verified[i];
+            const std::vector<uint8_t> &known = verified[i];
             if (!known.empty())
             {
                 if (std::memcmp(known.data(), data, bytes) == 0)
@@ -126,7 +127,7 @@ namespace vuaot
             if (all[i].hash == hash)
             {
                 match = static_cast<int32_t>(i);
-                g_verified[i].assign(data, data + bytes);
+                verified[i].assign(data, data + bytes);
             }
         }
         const uint32_t first = destBytes / 8u;

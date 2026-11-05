@@ -1548,6 +1548,7 @@ namespace
         {
             ps2_syscalls::dispatchDmacHandlersForCause(rdram, runtime, completedCause);
         }
+        mem.syncVif1WorkerIfGsInterrupt();
         ps2PollGsInterrupt(runtime);
 
         return 0;

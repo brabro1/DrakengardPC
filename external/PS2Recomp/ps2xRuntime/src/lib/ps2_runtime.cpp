@@ -571,6 +571,7 @@ PS2Runtime::~PS2Runtime()
     try
     {
         requestStop();
+        m_memory.stopVif1Worker();
         m_iopSubsystem.reset();
         m_iopHost.reset();
 #if defined(PLATFORM_VITA)
@@ -724,6 +725,7 @@ bool PS2Runtime::syncCoreSubsystems()
         return true;
     }
 
+    m_memory.stopVif1Worker(); // rebinding: the worker must not run against the old state
     m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
 #if defined(PS2X_HAVE_PARALLEL_GS)
     {
@@ -741,47 +743,55 @@ bool PS2Runtime::syncCoreSubsystems()
     m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
                                     { ProfileScope profile(g_profGifTsc); m_gs.processGIFPacket(data, size, static_cast<uint32_t>(m_gifArbiter.currentPath())); });
     m_memory.setGifArbiter(&m_gifArbiter);
-    m_memory.setVu1MscalCallback([this](uint32_t startPC, uint32_t top, uint32_t itop)
-                                 {
-                                     R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
-                                     if (!cpuContext)
-                                     {
-                                         cpuContext = &m_cpuContext;
-                                     }
-                                     m_vu1.state().dBitEnabled =
-                                         (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
-                                     m_vu1.state().tBitEnabled =
-                                         (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
-                                     ProfileScope profile(g_profVu1Tsc);
-                                     m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
-                                                   m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
-                                                   m_gs, &m_memory, startPC, top, itop, 65536);
-                                     cpuContext->vu0_vpu_stat =
-                                         (cpuContext->vu0_vpu_stat & ~0x0600u) |
-                                         (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
-                                         (m_vu1.state().stoppedByT ? 0x0400u : 0u); });
-    m_memory.setVu1MscntCallback([this](uint32_t top, uint32_t itop)
-                                 {
-                                     R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
-                                     if (!cpuContext)
-                                     {
-                                         cpuContext = &m_cpuContext;
-                                     }
-                                     m_vu1.state().dBitEnabled =
-                                         (cpuContext->vu0_fbrst & (1u << 10)) != 0u;
-                                     m_vu1.state().tBitEnabled =
-                                         (cpuContext->vu0_fbrst & (1u << 11)) != 0u;
-                                     ProfileScope profile(g_profVu1Tsc);
-                                     m_vu1.resume(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
-                                                  m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
-                                                  m_gs, &m_memory, top, itop, 65536);
-                                     cpuContext->vu0_vpu_stat =
-                                         (cpuContext->vu0_vpu_stat & ~0x0600u) |
-                                         (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
-                                         (m_vu1.state().stoppedByT ? 0x0400u : 0u); });
+    // VU1 microprograms run inside VIF1 processing, which runs on the VIF1 worker thread when
+    // it is enabled (PS2Memory::startVif1Worker). The worker must not read the EE context, so
+    // the EE publishes FBRST (D/T stop enables) when it queues work and picks up the VPU-STAT
+    // D/T stop bits the worker produced (s_vu1Fbrst / s_vu1StopBits).
+    static std::atomic<uint32_t> s_vu1Fbrst{0};
+    static std::atomic<uint32_t> s_vu1StopBits{0};
+    auto eeContext = [this]() -> R5900Context *
+    {
+        R5900Context *cpuContext = m_eeScheduler ? m_eeScheduler->currentContext() : nullptr;
+        return cpuContext ? cpuContext : &m_cpuContext;
+    };
+    auto runVu1 = [this, eeContext](bool start, uint32_t startPC, uint32_t top, uint32_t itop)
+    {
+        const bool onWorker = m_memory.onVif1WorkerThread();
+        const uint32_t fbrst = onWorker ? s_vu1Fbrst.load(std::memory_order_acquire) : eeContext()->vu0_fbrst;
+        m_vu1.state().dBitEnabled = (fbrst & (1u << 10)) != 0u;
+        m_vu1.state().tBitEnabled = (fbrst & (1u << 11)) != 0u;
+        {
+            ProfileScope profile(g_profVu1Tsc);
+            if (start)
+                m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE, m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
+                              m_gs, &m_memory, startPC, top, itop, 65536);
+            else
+                m_vu1.resume(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE, m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
+                             m_gs, &m_memory, top, itop, 65536);
+        }
+        const uint32_t stopBits = (m_vu1.state().stoppedByD ? 0x0200u : 0u) | (m_vu1.state().stoppedByT ? 0x0400u : 0u);
+        if (onWorker)
+        {
+            s_vu1StopBits.store(stopBits, std::memory_order_release);
+            return;
+        }
+        R5900Context *cpuContext = eeContext();
+        cpuContext->vu0_vpu_stat = (cpuContext->vu0_vpu_stat & ~0x0600u) | stopBits;
+    };
+    m_memory.setVu1MscalCallback([runVu1](uint32_t startPC, uint32_t top, uint32_t itop)
+                                 { runVu1(true, startPC, top, itop); });
+    m_memory.setVu1MscntCallback([runVu1](uint32_t top, uint32_t itop)
+                                 { runVu1(false, 0u, top, itop); });
+    m_memory.setVif1EnqueueHook([eeContext]()
+                                {
+                                    R5900Context *cpuContext = eeContext();
+                                    s_vu1Fbrst.store(cpuContext->vu0_fbrst, std::memory_order_release);
+                                    cpuContext->vu0_vpu_stat = (cpuContext->vu0_vpu_stat & ~0x0600u) |
+                                                               s_vu1StopBits.load(std::memory_order_acquire); });
     resetIop();
     m_vu0.reset();
     m_vu1.reset();
+    m_memory.startVif1Worker();
 
     m_boundRdram = rdram;
     m_boundGSVram = gsVram;
@@ -1560,6 +1570,7 @@ void PS2Runtime::handleBreak(uint8_t *rdram, R5900Context *ctx)
 
 void PS2Runtime::drainCompletedDmacHandlers(uint8_t *rdram)
 {
+    m_memory.syncVif1WorkerIfGsInterrupt();
     for (uint32_t cause : m_memory.consumeCompletedDmacCauses())
     {
         ps2_syscalls::dispatchDmacHandlersForCause(rdram, this, cause);
@@ -2353,12 +2364,21 @@ bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
             {
                 if (g_waitLoops[i].pc == pc)
                 {
+                    // The guest is only waiting (typically for the frame's GS FINISH): let the
+                    // VIF1/VU1 worker finish first, so guest time does not run ahead of the work
+                    // it is waiting for (VU1 work completes "instantly" in guest time, as before).
+                    m_memory.syncVif1Worker();
+                    ps2PollGsInterrupt(this);
                     cycles = std::max(cycles, g_waitLoops[i].cycles);
                     break;
                 }
             }
         }
     }
+    // With the VIF1 worker, GS SIGNAL/FINISH can latch after the DMA kick that queued them
+    // (drainCompletedDmacHandlers polled too early): raise the GS interrupt when it appears.
+    if (m_memory.vif1WorkerActive())
+        ps2PollGsInterrupt(this);
     if (g_checkpointProfile && (++g_checkpointTick & 63u) == 0u)
     {
         if (const GuestThread *thread = m_eeScheduler->currentThread())
@@ -2576,6 +2596,7 @@ void PS2Runtime::run()
                                               << " wait(ms): pacing=" << ps2x::waitstats::g_waitMicros[ps2x::waitstats::Pacing].exchange(0) / 1000
                                               << " idle=" << ps2x::waitstats::g_waitMicros[ps2x::waitstats::Idle].exchange(0) / 1000
                                               << " gsdrain=" << ps2x::waitstats::g_waitMicros[ps2x::waitstats::GsDrain].exchange(0) / 1000
+                                              << " vif1sync=" << ps2x::waitstats::g_waitMicros[ps2x::waitstats::Vif1Sync].exchange(0) / 1000
                                               << " transfers: exit=" << ps2x::waitstats::g_transfers[0].exchange(0)
                                               << " resched=" << ps2x::waitstats::g_transfers[1].exchange(0)
                                               << " invoke=" << ps2x::waitstats::g_transfers[2].exchange(0)
@@ -2671,6 +2692,7 @@ void PS2Runtime::run()
     {
         gameThread.join();
     }
+    m_memory.stopVif1Worker();
 
     if (m_debugUiInitialized && m_debugUiShutdownCallback)
     {

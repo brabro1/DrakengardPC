@@ -4,7 +4,7 @@
 
 | Release | Serial | Boot ELF SHA-1 | Status |
 |---|---|---|---|
-| Drakengard (USA) v1.00 | SLUS-20732 | `652d95f1cc7f788e219948d52fc21ba2fffaefaa` | **supported target** (boot in progress) |
+| Drakengard (USA) v1.00 | SLUS-20732 | `652d95f1cc7f788e219948d52fc21ba2fffaefaa` | **supported target** (first mission playable) |
 | Drakengard (Europe) | SLES-52322 | unknown | not supported — refused at start |
 | Drag-On Dragoon (Japan) | SLPM-65… | unknown | not supported |
 | Square Enix Sampler Disc Vol. 1 (demo) | SLUS-29087 | unknown | not supported |
@@ -32,9 +32,13 @@ Addresses, function maps and overrides are specific to the supported ELF.
 | 2026-11-05 | Interlaced presentation (SMODE2 INT+FFMD) | pass — single 448-line image | session 4, run 48 |
 | 2026-11-05 | First mission 3D scene after `_sceVu0ecossin` fix | pass (visual) — ground, hills, castle skyline, Caim with sword | session 4, runs 59–60 |
 | 2026-11-05 | Scripted d-pad / ✕ / □ in the mission | partial — inputs delivered, view moves; walking/attack not confirmed | session 4, run 60 |
+| 2026-11-05 | First mission on the GPU renderer with compiled VU code | pass — ground, Caim, HUD, map and hint drawn as in the session-4 frames; 59–60 VSync/s | session 5 |
+| 2026-11-05 | Dismiss the R3 hint, walk (d-pad up) and attack (□) | pass — Caim walks toward the fortress and swings his sword; HUD, trees and fortress drawn | session 5 |
+| 2026-11-05 | Speed while walking toward the fortress gate (synchronous VU1) | partial — 56–62 VSync/s, game thread fully busy near the gate | session 5 |
+| 2026-11-05 | Same walk with the VIF1/VU1 worker thread (another emulator using ~3 CPU threads) | pass — 59–60 VSync/s, ≥13% idle at the gate; frames correct | session 5 |
 
 ## Host
 
 | Machine | OS | CPU | GPU | Result |
 |---|---|---|---|---|
-| reference | Windows 11 Pro 26300 | i5-12400F | RTX 3060 (32.0.16.2101) | builds; boots through the title, menus, prologue and briefing into the first mission's intro |
+| reference | Windows 11 Pro 26300 | i5-12400F | RTX 3060 (32.0.16.2101) | builds; boots through the title, menus, prologue and briefing into the first mission; first mission playable at full speed |

@@ -16,13 +16,13 @@ Not affiliated with or endorsed by Square Enix or Cavia.
 ## Status
 
 Early but real: the game boots, the menus work and the first mission runs at **full speed**
-on the reference PC (Intel i5-12400F, RTX 3060) — the PS2's 60 VSyncs per second — with
-small dips in the heaviest scene measured so far.
+on the reference PC (Intel i5-12400F, RTX 3060): the PS2's 60 VSyncs per second, with the game
+logic, the vector-unit programs and the GPU renderer each on their own CPU thread.
 
 | Area | State |
 |---|---|
 | Boot, logos, title screen, menus, New Game, story intro | working, full speed |
-| First mission: walking, attacking, HUD, map | working, full speed (56–62 VSync/s near the fortress gate) |
+| First mission: walking, attacking, HUD, map | working, full speed with ~40% CPU headroom left (13% at the busiest spot measured) |
 | Rest of the game (later missions, dragon flight, story, endings) | not yet verified |
 | Audio, movies (FMV), memory card saves | not yet |
 | High resolution, widescreen, uncapped frame rate, DLSS/FSR | planned (see [docs/FEATURES.md](docs/FEATURES.md)) |

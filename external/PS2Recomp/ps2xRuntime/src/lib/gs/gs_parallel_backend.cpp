@@ -11,6 +11,7 @@
 #include "context.hpp"
 #include "device.hpp"
 #include "gs_interface.hpp"
+#include "thread_id.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -99,6 +100,7 @@ struct GSParallelBackend::Impl
     }
     void drain()
     {
+        Util::register_thread_index(0); // callers use the device after draining (see workerLoop)
         ps2x::waitstats::Scope waitScope(ps2x::waitstats::GsDrain);
         queueCv.notify_one();
         std::unique_lock<std::mutex> lock(queueMutex);
@@ -170,6 +172,10 @@ bool GSParallelBackend::create(uint32_t superSampling)
 
 void GSParallelBackend::workerLoop()
 {
+    // Granite looks up per-thread resources by thread index; an unregistered thread logs an
+    // error on every lookup (tens of thousands of lines per run). All device use is serialised
+    // under Impl::mutex, so index 0 is safe here.
+    Util::register_thread_index(0);
     Impl &s = *m_impl;
     std::vector<uint8_t> batch;
     for (;;)

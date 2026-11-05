@@ -1,5 +1,6 @@
 #include "runtime/gs/gs_draw_log.h"
 #include "runtime/gs/gs_frontend.h"
+#include "runtime/vif1_scan.h"
 #include "runtime/gs/gs_cpu_backend.h"
 #include "ps2_log.h"
 #include "runtime/ps2_memory.h"
@@ -699,9 +700,21 @@ namespace
     }
 }
 
+namespace
+{
+    // GIF path of the packet being processed (FINISH credits apply to PATH2 only).
+    thread_local uint32_t t_gifPath = 0u;
+}
+
 void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes, uint32_t path)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+    struct PathScope
+    {
+        uint32_t saved;
+        explicit PathScope(uint32_t p) : saved(t_gifPath) { t_gifPath = p; }
+        ~PathScope() { t_gifPath = saved; }
+    } pathScope(path);
     if (!data || sizeBytes < 16 || !m_backend)
         return;
 
@@ -709,7 +722,17 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes, uint32_t path
     {
         m_backend->RawGifPacket(path, data, sizeBytes);
         forEachSideEffectWrite(data, sizeBytes, [&](uint8_t addr, uint64_t value)
-                               { writeRegisterUnlocked(addr, value); });
+                               {
+                                   // Diagnostic (PS2X_GS_FINISH_TRACE=1): which GIF path delivers SIGNAL/FINISH.
+                                   static const bool s_trace = [] { const char *v = std::getenv("PS2X_GS_FINISH_TRACE"); return v && *v == '1'; }();
+                                   if (s_trace && (addr == GS_REG_FINISH || addr == GS_REG_SIGNAL))
+                                   {
+                                       static std::atomic<uint32_t> s_count{0};
+                                       const uint32_t n = s_count.fetch_add(1, std::memory_order_relaxed);
+                                       if (n < 4000u && (n % 50u) == 0u)
+                                           std::fprintf(stderr, "[gs:finish-trace] n=%u reg=0x%02x path=%u bytes=%u\n", n, addr, path, sizeBytes);
+                                   }
+                                   writeRegisterUnlocked(addr, value); });
         return;
     }
 
@@ -1581,7 +1604,9 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
             m_backend->Flush();
             m_backend->Sync(GSSyncReason::Finish);
         }
-        if (m_privRegs)
+        // The EE may already have latched this FINISH at DMA kick time (VIF1 worker,
+        // runtime/vif1_scan.h); then it only consumes the credit.
+        if (m_privRegs && !(t_gifPath == 2u && ps2x::vif1scan::consumeFinishCredit()))
             m_privRegs->csr.fetch_or(0x2);
         break;
     }
