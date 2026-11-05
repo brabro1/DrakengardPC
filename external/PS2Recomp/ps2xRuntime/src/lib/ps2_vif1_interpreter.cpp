@@ -1,5 +1,6 @@
 // Based on Blackline Interactive implementation
 #include "runtime/ps2_memory.h"
+#include "runtime/vu_aot.h"
 #include <cstring>
 #include <algorithm>
 #include <cstdlib>
@@ -635,6 +636,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                 {
                     std::memcpy(m_vu1Code + destAddr, data + pos, copyBytes);
                     markVU1CodeModified();
+                    vuaot::onVu1Upload(destAddr, data + pos, copyBytes);
                 }
             }
             pos += mpgBytes;

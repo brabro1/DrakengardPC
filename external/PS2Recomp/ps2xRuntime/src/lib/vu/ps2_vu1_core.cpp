@@ -1,4 +1,5 @@
 #include "runtime/ps2_vu1.h"
+#include "runtime/vu_aot.h"
 #include "runtime/gs/ps2_gif_arbiter.h"
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/ps2_memory.h"
@@ -1673,11 +1674,79 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
     const bool useVuRounding = std::fesetround(FE_TOWARDZERO) == 0;
     const uint64_t budgetEnd = m_cycle + maxCycles;
     bool programEnded = false;
+    uint32_t aotSkipPc = 0xFFFFFFFFu;
     while (m_cycle < budgetEnd && !m_stopRequested)
     {
         commitReadyPipelines();
         if (m_state.pc + 8u > codeSize)
             break;
+
+        // Ahead-of-time compiled VU1 microprograms (runtime/vu_aot.h). Entered only at a
+        // clean instruction boundary; the interpreter handles code without a compiled version.
+        if (m_unit == Unit::VU1 && memory && vuCode == memory->getVU1Code() && m_state.pc != aotSkipPc &&
+            !m_state.branchPending && !m_state.ebit && !m_state.haltAfterDelaySlot && vuaot::enabled())
+        {
+            if (vuaot::ProgramFn fn = vuaot::lookupVu1(m_state.pc))
+            {
+                flushPipelines();
+                static vuaot::Context ctx;
+                ctx.s = &m_state;
+                ctx.mem = vuData;
+                ctx.memMask = dataSize - 1u;
+                ctx.cyc = 0;
+                ctx.budget = budgetEnd > m_cycle ? static_cast<uint32_t>(std::min<uint64_t>(budgetEnd - m_cycle, 0x7FFFFFFFu)) : 1u;
+                std::memset(ctx.vfReady, 0, sizeof(ctx.vfReady));
+                std::memset(ctx.viReady, 0, sizeof(ctx.viReady));
+                std::memset(ctx.accReady, 0, sizeof(ctx.accReady));
+                ctx.flagCount = 0;
+                ctx.workingClip = m_workingClip;
+                ctx.qPending = ctx.pPending = false;
+                ctx.efuResource = 0;
+                ctx.ebitPending = false;
+                ctx.brTaken = false;
+                ctx.bkCyc = 0xFFFFFFFFu;
+                ctx.xgkickUser = this;
+                ctx.xgkick = [](void *user, const uint8_t *packet, uint32_t bytes)
+                {
+                    auto *self = static_cast<VU1Interpreter *>(user);
+                    if (self->m_activeMemory)
+                        self->m_activeMemory->submitGifPacket(GifPathId::Path1, packet, bytes);
+                    else if (self->m_activeGs)
+                        self->m_activeGs->processGIFPacket(packet, bytes, 1u);
+                };
+                uint32_t exit = fn(ctx, m_state.pc);
+                while (exit == vuaot::ExitLeave && !ctx.brTaken && ctx.cyc < ctx.budget)
+                {
+                    vuaot::ProgramFn next = vuaot::lookupVu1(ctx.pc);
+                    if (!next)
+                        break;
+                    exit = next(ctx, ctx.pc);
+                }
+                vuaot::flushAll(ctx);
+                m_workingClip = ctx.workingClip;
+                m_state.pc = ctx.pc & microAddressMask();
+                m_cycle += ctx.cyc;
+                if (exit == vuaot::ExitEnd)
+                {
+                    programEnded = true;
+                    break;
+                }
+                if (exit == vuaot::ExitFallback || ctx.brTaken || ctx.ebitPending)
+                {
+                    // Hand the remaining state to the interpreter for (at least) one pair.
+                    if (ctx.brTaken)
+                    {
+                        m_state.branchPending = true;
+                        m_state.branchTarget = ctx.brTarget & microAddressMask();
+                        m_state.branchDelay = 0;
+                    }
+                    m_state.ebit = ctx.ebitPending;
+                    aotSkipPc = m_state.pc;
+                }
+                continue;
+            }
+        }
+        aotSkipPc = 0xFFFFFFFFu;
 
         const DecodedInstructionPair decoded = getDecodedInstructionPairForPc(vuCode, codeSize, memory, m_state.pc);
         if (decoded.upperUsage.reserved || decoded.lowerUsage.reserved)
