@@ -39,7 +39,9 @@ def main() -> int:
     shutil.rmtree(out_dir, ignore_errors=True)
     os.makedirs(frames)
     env = dict(os.environ)
-    for candidate in (os.environ.get("MSYS2_CLANG64_BIN", ""), r"D:\msys64\clang64\bin", r"C:\msys64\clang64\bin"):
+    on_path = shutil.which("clang")
+    for candidate in (os.environ.get("MSYS2_CLANG64_BIN", ""), os.path.dirname(on_path) if on_path else "",
+                      r"C:\msys64\clang64\bin"):
         if candidate and os.path.isdir(candidate):
             env["PATH"] = candidate + os.pathsep + env.get("PATH", "")
             break

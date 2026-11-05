@@ -40,14 +40,27 @@ namespace dkg::debug
         std::thread g_thread;
         std::mutex g_mutex;
         std::map<DWORD, std::unordered_map<uint64_t, uint32_t>> g_hits; // thread id -> rip -> samples
+        // Samples outside the exe: the qword at [rsp] (the caller, for leaf routines such as memcpy).
+        std::map<DWORD, std::unordered_map<uint64_t, uint32_t>> g_callers;
         uint64_t g_totalSamples = 0;
         std::string g_path;
 
-        void sampleLoop(unsigned intervalUs)
+        void sampleLoop(unsigned intervalUs, unsigned delaySeconds)
         {
+            const auto startAt = std::chrono::steady_clock::now() + std::chrono::seconds(delaySeconds);
+            while (g_running.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < startAt)
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
             const DWORD self = GetCurrentThreadId();
             const DWORD pid = GetCurrentProcessId();
             std::vector<std::pair<DWORD, uint64_t>> rips;
+            std::vector<std::pair<DWORD, uint64_t>> callers;
+            const uint64_t exeBase = reinterpret_cast<uint64_t>(GetModuleHandleW(nullptr));
+            uint64_t exeEnd = exeBase;
+            {
+                MODULEINFO mi{};
+                if (GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(nullptr), &mi, sizeof(mi)))
+                    exeEnd = exeBase + mi.SizeOfImage;
+            }
             std::vector<std::pair<DWORD, HANDLE>> threads;
             auto lastRefresh = std::chrono::steady_clock::time_point{};
             while (g_running.load(std::memory_order_acquire))
@@ -79,6 +92,7 @@ namespace dkg::debug
                 }
 
                 rips.clear();
+                callers.clear();
                 for (auto &[tid, h] : threads)
                 {
                     if (SuspendThread(h) == static_cast<DWORD>(-1))
@@ -88,12 +102,24 @@ namespace dkg::debug
                     const bool ok = GetThreadContext(h, &ctx) != 0;
                     ResumeThread(h);
                     if (ok)
+                    {
                         rips.emplace_back(tid, ctx.Rip);
+                        if (ctx.Rip < exeBase || ctx.Rip >= exeEnd)
+                        {
+                            uint64_t ret = 0;
+                            SIZE_T got = 0;
+                            if (ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(ctx.Rsp), &ret, sizeof(ret), &got) &&
+                                got == sizeof(ret) && ret >= exeBase && ret < exeEnd)
+                                callers.emplace_back(tid, ret);
+                        }
+                    }
                 }
                 {
                     std::lock_guard<std::mutex> lock(g_mutex);
                     for (const auto &[tid, rip] : rips)
                         ++g_hits[tid][rip];
+                    for (const auto &[tid, ret] : callers)
+                        ++g_callers[tid][ret];
                     g_totalSamples += rips.size();
                 }
                 std::this_thread::sleep_for(std::chrono::microseconds(intervalUs));
@@ -112,8 +138,11 @@ namespace dkg::debug
         const unsigned us = interval ? static_cast<unsigned>(std::strtoul(interval, nullptr, 10)) : 1000u;
         g_path = path;
         g_running.store(true, std::memory_order_release);
-        g_thread = std::thread(sampleLoop, us ? us : 1000u);
-        std::fprintf(stderr, "[profile] sampling every %u us -> %s\n", us, path);
+        // DKG_PROFILE_DELAY=<seconds>: start sampling late (e.g. skip boot and menus).
+        const char *delay = std::getenv("DKG_PROFILE_DELAY");
+        const unsigned delaySeconds = delay ? static_cast<unsigned>(std::strtoul(delay, nullptr, 10)) : 0u;
+        g_thread = std::thread(sampleLoop, us ? us : 1000u, delaySeconds);
+        std::fprintf(stderr, "[profile] sampling every %u us after %u s -> %s\n", us, delaySeconds, path);
     }
 
     void stopSamplerAndWrite()
@@ -152,6 +181,9 @@ namespace dkg::debug
                     std::fprintf(out, "t %lu modrva %s 0x%llx %u\n", static_cast<unsigned long>(tid), name,
                                  static_cast<unsigned long long>(rip - reinterpret_cast<uint64_t>(module)), count);
             }
+            for (const auto &[ret, count] : g_callers[tid])
+                std::fprintf(out, "t %lu caller 0x%llx %u\n", static_cast<unsigned long>(tid),
+                             static_cast<unsigned long long>(ret - actualBase), count);
             for (const auto &[name, count] : otherModules)
                 std::fprintf(out, "t %lu module %s %llu\n", static_cast<unsigned long>(tid), name.c_str(),
                              static_cast<unsigned long long>(count));

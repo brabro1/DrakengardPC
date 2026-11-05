@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cfenv>
+#include <xmmintrin.h>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -67,21 +68,27 @@ VU1Interpreter::VU1Interpreter(Unit unit)
 
 void VU1Interpreter::resetScheduler()
 {
-    m_flagPipeline = {};
-    m_fdiv = {};
+    // execute() resets the scheduler on every MSCAL. Compiled programs never touch the
+    // interpreter's pipelines, so skip the (several KB) clear while they are still clean.
+    if (m_schedulerDirty)
+    {
+        m_schedulerDirty = false;
+        m_flagPipeline = {};
+        m_fdiv = {};
+        m_efu = {};
+        m_storePipeline = {};
+        m_vfWritePipeline = {};
+        m_viWritePipeline = {};
+        m_accWritePipeline = {};
+        m_xgkick = {};
+        m_vfReady = {};
+        m_viReady = {};
+        m_accReady = {};
+        m_vfLatestWrite = {};
+        m_viLatestWrite = {};
+        m_accLatestWrite = {};
+    }
     m_nextCommitCycle = 0;
-    m_efu = {};
-    m_storePipeline = {};
-    m_vfWritePipeline = {};
-    m_viWritePipeline = {};
-    m_accWritePipeline = {};
-    m_xgkick = {};
-    m_vfReady = {};
-    m_viReady = {};
-    m_accReady = {};
-    m_vfLatestWrite = {};
-    m_viLatestWrite = {};
-    m_accLatestWrite = {};
     m_nextWriteSequence = 0;
     m_efuResourceReady = 0;
     m_workingClip = m_state.clip;
@@ -1670,8 +1677,10 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
     m_activeGs = &gs;
     m_activeMemory = memory;
 
-    const int previousRoundingMode = std::fegetround();
-    const bool useVuRounding = std::fesetround(FE_TOWARDZERO) == 0;
+    // VU arithmetic rounds toward zero. Only SSE matters on x64 (no x87 math), and
+    // _mm_setcsr is far cheaper than fesetround, which also rewrites the x87 control word.
+    const unsigned previousCsr = _mm_getcsr();
+    _mm_setcsr((previousCsr & ~0x6000u) | 0x6000u);
     const uint64_t budgetEnd = m_cycle + maxCycles;
     bool programEnded = false;
     uint32_t aotSkipPc = 0xFFFFFFFFu;
@@ -1702,6 +1711,7 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
                 std::memset(ctx.viReady, 0, sizeof(ctx.viReady));
                 std::memset(ctx.accReady, 0, sizeof(ctx.accReady));
                 ctx.flagCount = 0;
+                ctx.flagHead = 0;
                 ctx.workingClip = m_workingClip;
                 ctx.qPending = ctx.pPending = false;
                 ctx.efuResource = 0;
@@ -1751,6 +1761,7 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
             }
         }
         aotSkipPc = 0xFFFFFFFFu;
+        m_schedulerDirty = true;
         vuaot::g_interpretedPairs[m_unit == Unit::VU1 ? 1 : 0].fetch_add(1, std::memory_order_relaxed);
 
         const DecodedInstructionPair decoded = getDecodedInstructionPairForPc(vuCode, codeSize, memory, m_state.pc);
@@ -1947,6 +1958,5 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
         m_pendingHaltT = false;
     }
     m_state.cycles = m_cycle;
-    if (useVuRounding && previousRoundingMode != -1)
-        std::fesetround(previousRoundingMode);
+    _mm_setcsr(previousCsr);
 }

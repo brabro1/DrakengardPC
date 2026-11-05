@@ -30,7 +30,9 @@ def ensure_toolchain_dlls() -> None:
     """MinGW-built tools load libc++/FFmpeg DLLs from the MSYS2 CLANG64 bin directory."""
     if os.name != "nt":
         return
-    candidates = [os.environ.get("MSYS2_CLANG64_BIN", ""), r"C:\msys64\clang64\bin", r"D:\msys64\clang64\bin"]
+    on_path = shutil.which("clang")
+    candidates = [os.environ.get("MSYS2_CLANG64_BIN", ""), os.path.dirname(on_path) if on_path else "",
+                  r"C:\msys64\clang64\bin"]
     for c in candidates:
         if c and os.path.isfile(os.path.join(c, "libc++.dll")):
             if c.lower() not in os.environ.get("PATH", "").lower():

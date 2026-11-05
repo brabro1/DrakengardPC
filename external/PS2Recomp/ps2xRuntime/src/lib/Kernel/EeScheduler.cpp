@@ -1,4 +1,5 @@
 #include "runtime/ee_scheduler.h"
+#include "runtime/wait_stats.h"
 #include "runtime/gs/gs_draw_log.h"
 
 #include "ps2_log.h"
@@ -527,6 +528,7 @@ int EeScheduler::startThread(int id, uint32_t arg, const R5900Context &caller, b
         m_runtime.guestFree(ownedStack);
     }
     publishSnapshot();
+    ps2x::waitstats::g_transfers[0].fetch_add(1, std::memory_order_relaxed);
     throw EeDispatcherTransfer{};
 }
 
@@ -816,6 +818,7 @@ void EeScheduler::transferIfRequested(bool interruptSafe)
     m_rescheduleRequested = false;
     m_timeSliceExpired = false;
     publishSnapshot();
+    ps2x::waitstats::g_transfers[1].fetch_add(1, std::memory_order_relaxed);
     throw EeDispatcherTransfer{};
 }
 
@@ -1119,6 +1122,7 @@ void EeScheduler::queueInvocation(GuestInvocation invocation)
     invocation.sequence = ++m_invocationSequence;
     owner->invocations.push_back(std::move(invocation));
     publishSnapshot();
+    ps2x::waitstats::g_transfers[2].fetch_add(1, std::memory_order_relaxed);
     throw EeDispatcherTransfer{};
 }
 
@@ -1138,6 +1142,7 @@ void EeScheduler::queueInvocation(GuestInvocation invocation)
         owner->invocations.push_back(std::move(*it));
     }
     publishSnapshot();
+    ps2x::waitstats::g_transfers[3].fetch_add(1, std::memory_order_relaxed);
     throw EeDispatcherTransfer{};
 }
 
@@ -1699,6 +1704,7 @@ void EeScheduler::blockCurrent(EeWaitState wait)
     self->status = self->suspendCount == 0 ? EeThreadStatus::Waiting : EeThreadStatus::WaitingSuspended;
     m_currentThreadId = 0;
     publishSnapshot();
+    ps2x::waitstats::g_transfers[4].fetch_add(1, std::memory_order_relaxed);
     throw EeDispatcherTransfer{};
 }
 
@@ -1811,6 +1817,7 @@ void EeScheduler::processDueDeadlines()
 
             if (now < pacingDeadline)
             {
+                ps2x::waitstats::Scope waitScope(ps2x::waitstats::Pacing);
                 m_eventCv.wait_until(lock, pacingDeadline, [this]()
                                      { return !m_events.empty() ||
                                               m_stopRequested.load(std::memory_order_acquire); });
@@ -2017,6 +2024,7 @@ void EeScheduler::waitForEvent()
     const bool hasTimerDeadline = timerCycles != std::numeric_limits<uint64_t>::max();
     if (m_deadlines.empty() && !hasTimerDeadline)
     {
+        ps2x::waitstats::Scope idleScope(ps2x::waitstats::Idle);
         m_eventCv.wait(lock, [this]()
                        { return !m_events.empty() || m_stopRequested.load(std::memory_order_acquire); });
         return;
@@ -2048,6 +2056,7 @@ void EeScheduler::waitForEvent()
         }
     }
 
+    ps2x::waitstats::Scope idleScope(ps2x::waitstats::Idle);
     const bool signaled = m_eventCv.wait_until(lock, hostDeadline, [this]()
                                                { return !m_events.empty() ||
                                                         m_stopRequested.load(std::memory_order_acquire); });

@@ -6,6 +6,18 @@
 |---|---|---|---|---|
 | PS2Recomp (ps2xRecomp, ps2xRuntime, ps2xIOP, ps2xAnalyzer, ps2xTest) | commit `e5636981a1c9de368f6b71e819c3dc188dfedbf4` + local changes | GPL-3.0 | `external/PS2Recomp/` (`LICENSE` there) | © ran-j and contributors. Local modifications are commits in this repository. `android/`, `vita/`, `ps2xStudio/` were not vendored. Its embedded SCE symbol database (`sce_symbol_database_data.h`) is part of upstream. |
 
+## Git submodule (fetched with `git submodule update --init --recursive`)
+
+| Component | Version | License | Location | Notes |
+|---|---|---|---|---|
+| paraLLEl-GS | commit `cc6184af7e0c03da603045ca371ffa5dae9b0655` | LGPL-3.0-or-later | `external/parallel-gs/` (`COPYING.LGPLv3`) | © Arntzen Software AS. GS emulation on the GPU (Vulkan compute); built as a static library (`PARALLEL_GS_STANDALONE`). Unmodified. |
+| Granite (inside paraLLEl-GS) | as pinned by paraLLEl-GS | MIT | `external/parallel-gs/Granite/` | © Hans-Kristian Arntzen. Vulkan backend and utilities used by paraLLEl-GS. |
+| volk (inside Granite) | as pinned | MIT | `Granite/third_party/volk/` | © Arseny Kapoulkine. Vulkan loader. |
+| Vulkan-Headers (inside Granite) | as pinned | Apache-2.0 / MIT | `Granite/third_party/khronos/vulkan-headers/` | © The Khronos Group Inc. |
+
+Granite's other third-party directories (shader compilers, SDL, etc.) are only used if their
+targets are built; check the linked set before distributing a binary.
+
 ## Fetched at build time (not in the repository)
 
 Pulled by PS2Recomp's CMake (`FetchContent`) into `build/_deps`:
@@ -31,8 +43,9 @@ Pulled by PS2Recomp's CMake (`FetchContent`) into `build/_deps`:
 
 ## Obligations before distributing any build
 
-- The combined program includes GPL-3.0 code; binaries must ship with corresponding source
-  and the GPL-3.0 text, and the project's own license must be GPL-3.0-compatible.
+- This project is licensed under GPL-3.0 (`LICENSE`), matching PS2Recomp. The combined
+  program includes GPL-3.0 and LGPL-3.0-or-later code; binaries must ship with corresponding
+  source, the GPL-3.0 text and the LGPL-3.0 text (paraLLEl-GS).
 - FFmpeg: ship its license and note the build configuration of the DLLs actually shipped.
 - Never ship game data or anything generated from it: the extracted ELF, `work/`,
   generated C++, or binaries that contain the recompiled game code. The intended

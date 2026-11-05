@@ -6,6 +6,7 @@
 #include "runtime/gs/gs_parallel_backend.h"
 #include "runtime/gs/ps2_gs_memory.h"
 #include "runtime/ps2_memory.h"
+#include "runtime/wait_stats.h"
 
 #include "context.hpp"
 #include "device.hpp"
@@ -14,6 +15,7 @@
 #include <algorithm>
 #include <cstring>
 #include <iostream>
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -47,20 +49,28 @@ struct GSParallelBackend::Impl
     uint32_t trxdir = 3u;
     bool loggedClear = false;
 
-    // GS worker thread (as PCSX2's MTGS): the game thread only queues work.
-    struct Command
+    // GS worker thread (as PCSX2's MTGS): the game thread only appends commands to a byte
+    // batch; the worker swaps batches (both keep their capacity, so nothing is allocated per
+    // packet). Record: CommandHeader, then `size` payload bytes padded to 16.
+    enum Kind : uint32_t { Gif = 0, Reg = 1, Vsync = 2 };
+    struct CommandHeader
     {
-        enum Kind : uint8_t { Gif, Reg, Vsync } kind = Gif;
-        uint32_t path = 0;
-        uint64_t value = 0;
-        std::vector<uint8_t> data;
-        uint64_t regs[15] = {};
-        GSPresentationRequest request{};
+        uint32_t kind;
+        uint32_t path;
+        uint32_t size;
+        uint32_t pad;
+        uint64_t value;
+        uint64_t pad2;
+    };
+    struct VsyncPayload
+    {
+        uint64_t regs[15];
+        GSPresentationRequest request;
     };
     std::mutex queueMutex;
     std::condition_variable queueCv;
     std::condition_variable idleCv;
-    std::vector<Command> queue;
+    std::vector<uint8_t> pending;
     bool busy = false;
     bool stop = false;
     std::thread worker;
@@ -68,18 +78,31 @@ struct GSParallelBackend::Impl
     std::mutex frameMutex;
     PresentationFrame latestFrame;
 
-    void push(Command &&command)
+    void push(uint32_t kind, uint32_t path, uint64_t value, const void *data, uint32_t size)
     {
+        const uint32_t padded = (size + 15u) & ~15u;
+        bool wake = kind == Vsync;
         {
             std::lock_guard<std::mutex> lock(queueMutex);
-            queue.push_back(std::move(command));
+            const size_t at = pending.size();
+            pending.resize(at + sizeof(CommandHeader) + padded);
+            CommandHeader header{kind, path, size, 0u, value, 0u};
+            std::memcpy(pending.data() + at, &header, sizeof(header));
+            if (size)
+                std::memcpy(pending.data() + at + sizeof(header), data, size);
+            wake = wake || pending.size() >= (256u << 10);
         }
-        queueCv.notify_one();
+        // Waking the worker is a kernel call on Windows; do it per batch, not per packet.
+        // The worker also polls every millisecond.
+        if (wake)
+            queueCv.notify_one();
     }
     void drain()
     {
+        ps2x::waitstats::Scope waitScope(ps2x::waitstats::GsDrain);
+        queueCv.notify_one();
         std::unique_lock<std::mutex> lock(queueMutex);
-        idleCv.wait(lock, [&] { return queue.empty() && !busy; });
+        idleCv.wait(lock, [&] { return pending.empty() && !busy; });
     }
 };
 
@@ -148,33 +171,41 @@ bool GSParallelBackend::create(uint32_t superSampling)
 void GSParallelBackend::workerLoop()
 {
     Impl &s = *m_impl;
-    std::vector<Impl::Command> batch;
+    std::vector<uint8_t> batch;
     for (;;)
     {
         {
             std::unique_lock<std::mutex> lock(s.queueMutex);
             s.busy = false;
             s.idleCv.notify_all();
-            s.queueCv.wait(lock, [&] { return s.stop || !s.queue.empty(); });
-            if (s.stop && s.queue.empty())
+            while (!s.stop && s.pending.empty())
+                s.queueCv.wait_for(lock, std::chrono::milliseconds(1));
+            if (s.stop && s.pending.empty())
                 return;
-            batch.swap(s.queue);
+            batch.swap(s.pending);
             s.busy = true;
         }
         std::lock_guard<std::mutex> lock(s.mutex);
-        for (Impl::Command &command : batch)
+        size_t at = 0;
+        while (at + sizeof(Impl::CommandHeader) <= batch.size())
         {
-            switch (command.kind)
+            Impl::CommandHeader header;
+            std::memcpy(&header, batch.data() + at, sizeof(header));
+            const uint8_t *payload = batch.data() + at + sizeof(header);
+            at += sizeof(header) + ((header.size + 15u) & ~15u);
+            switch (header.kind)
             {
-            case Impl::Command::Gif:
-                s.iface.gif_transfer(command.path, command.data.data(), command.data.size());
+            case Impl::Gif:
+                s.iface.gif_transfer(header.path, payload, header.size);
                 break;
-            case Impl::Command::Reg:
-                s.iface.write_register(ParallelGS::RegisterAddr(command.path), command.value);
+            case Impl::Reg:
+                s.iface.write_register(ParallelGS::RegisterAddr(header.path), header.value);
                 break;
-            case Impl::Command::Vsync:
+            case Impl::Vsync:
             {
-                PresentationFrame frame = scanout(command.regs, command.request);
+                Impl::VsyncPayload vsync;
+                std::memcpy(&vsync, payload, sizeof(vsync));
+                PresentationFrame frame = scanout(vsync.regs, vsync.request);
                 if (frame)
                 {
                     std::lock_guard<std::mutex> frameLock(s.frameMutex);
@@ -182,6 +213,8 @@ void GSParallelBackend::workerLoop()
                 }
                 break;
             }
+            default:
+                break;
             }
         }
         batch.clear();
@@ -233,22 +266,14 @@ void GSParallelBackend::RawGifPacket(uint32_t path, const uint8_t *data, uint32_
 {
     if (!m_impl || !data || sizeBytes < 16u)
         return;
-    Impl::Command command;
-    command.kind = Impl::Command::Gif;
-    command.path = std::min<uint32_t>(path, 3u);
-    command.data.assign(data, data + (sizeBytes & ~15u));
-    m_impl->push(std::move(command));
+    m_impl->push(Impl::Gif, std::min<uint32_t>(path, 3u), 0u, data, sizeBytes & ~15u);
 }
 
 void GSParallelBackend::RawRegisterWrite(uint8_t addr, uint64_t value)
 {
     if (!m_impl)
         return;
-    Impl::Command command;
-    command.kind = Impl::Command::Reg;
-    command.path = addr;
-    command.value = value;
-    m_impl->push(std::move(command));
+    m_impl->push(Impl::Reg, addr, value, nullptr, 0u);
 }
 
 PresentationFrame GSParallelBackend::Present(const GSPresentationRequest &request)
@@ -257,18 +282,17 @@ PresentationFrame GSParallelBackend::Present(const GSPresentationRequest &reques
         return {};
     // Queue a scanout with the CRTC registers as they are now and hand back the newest frame
     // the worker has finished (one or two VSyncs behind).
-    Impl::Command command;
-    command.kind = Impl::Command::Vsync;
-    command.request = request;
+    Impl::VsyncPayload vsync{};
+    vsync.request = request;
     if (m_privRegs)
     {
         const uint64_t regs[15] = {m_privRegs->pmode, m_privRegs->smode1, m_privRegs->smode2, m_privRegs->srfsh,
                                    m_privRegs->synch1, m_privRegs->synch2, m_privRegs->syncv, m_privRegs->dispfb1,
                                    m_privRegs->display1, m_privRegs->dispfb2, m_privRegs->display2, m_privRegs->extbuf,
                                    m_privRegs->extdata, m_privRegs->extwrite, m_privRegs->bgcolor};
-        std::memcpy(command.regs, regs, sizeof(regs));
+        std::memcpy(vsync.regs, regs, sizeof(regs));
     }
-    m_impl->push(std::move(command));
+    m_impl->push(Impl::Vsync, 0u, 0u, &vsync, sizeof(vsync));
     std::lock_guard<std::mutex> frameLock(m_impl->frameMutex);
     return m_impl->latestFrame;
 }

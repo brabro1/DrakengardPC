@@ -274,6 +274,10 @@ def fl(x):
 
 
 Q_UPPER = {0x1C, 0x20, 0x21, 0x24, 0x25}
+# Product sticky flags (status bits 6-9 from MADD/MSUB products) are only observable through
+# the status register. VU1 programs that never read status skip them; VU0 status can also be
+# read by the EE (CFC2), so VU0 programs always keep them.
+KEEP_STICKY = [True]
 Q_SPECIAL = {0x1C, 0x20, 0x21, 0x24, 0x25}
 
 
@@ -300,7 +304,7 @@ def emit_upper(u, out):
                                    f"f{c} = vuaot::laneFlags(u{c}, double(ac) - double(a) * double(b));")
                     else:
                         out.append(f"    u{c} = a * b; f{c} = vuaot::laneFlags(u{c}, double(a) * double(b));")
-                    if product:
+                    if product and KEEP_STICKY[0]:
                         out.append("    sticky |= vuaot::productSticky(a, b);")
                     out.append("  }")
                 continue
@@ -317,16 +321,24 @@ def emit_upper(u, out):
             else:
                 out.append(f"    const float ac = vuaot::nop_(s.acc[{c}]);")
                 expr, ex = "ac - a * b", "double(ac) - double(a) * double(b)"
-            out.append(f"    u{c} = {expr}; f{c} = vuaot::laneFlags(u{c}, {ex});")
-            if product:
+            if FLAGS_LIVE[0]:
+                out.append(f"    u{c} = {expr}; f{c} = vuaot::fastFlags(u{c}); "
+                           f"if (f{c} == 0xFFu) f{c} = vuaot::laneFlags(u{c}, {ex});")
+            else:
+                # Flags dead (see FlagLiveness): only the zero/denormal/overflow value fix-up.
+                out.append(f"    u{c} = {expr}; if (vuaot::fastFlags(u{c}) == 0xFFu) (void)vuaot::laneFlags(u{c}, {ex});")
+            if product and KEEP_STICKY[0]:
                 out.append("    sticky |= vuaot::productSticky(a, b);")
             out.append("  }")
-        for c in lanes:
-            lane = LANES[c]
-            out.append(f"  mac |= ((f{c} & 1u) ? {lane}u : 0u) | ((f{c} & 2u) ? {lane << 4}u : 0u) | "
-                       f"((f{c} & 4u) ? {lane << 8}u : 0u) | ((f{c} & 8u) ? {lane << 12}u : 0u); st |= f{c};")
-        if lanes:
-            out.append("  vuaot::fmacFlags(c, mac, st, sticky);")
+        if FLAGS_LIVE[0]:
+            for c in lanes:
+                lane = LANES[c]
+                out.append(f"  mac |= ((f{c} & 1u) ? {lane}u : 0u) | ((f{c} & 2u) ? {lane << 4}u : 0u) | "
+                           f"((f{c} & 4u) ? {lane << 8}u : 0u) | ((f{c} & 8u) ? {lane << 12}u : 0u); st |= f{c};")
+            if lanes:
+                out.append("  vuaot::fmacFlags(c, mac, st, sticky);")
+        else:
+            out.append("  (void)mac; (void)st; (void)sticky;")
         out.append("}")
         return ("acc", lanes) if acc_target else (("vf", target if target is not None else fd), lanes)
 
@@ -666,8 +678,11 @@ def emit_lower(lo, pc, out, ctx):
     raise Unsupported(f"lower special {sp:#x}")
 
 
-def emit_pair(pc, lo, up, prog):
-    """C++ for one instruction pair (labelled L_<pc>)."""
+def emit_pair(pc, lo, up, prog, need=None, ebit_check=True):
+    """C++ for one instruction pair (labelled L_<pc>).
+
+    need(file, reg, lane) says whether an operand stall check is required (see HazardAnalysis);
+    None keeps every check."""
     out = []
     ibit = bool(up & 0x80000000)
     ebit = bool(up & 0x40000000)
@@ -678,17 +693,19 @@ def emit_pair(pc, lo, up, prog):
     if is_branch:
         out.append("const uint32_t start = c.cyc; (void)start;")
     # ---- issue: stalls on operands and resources (VU1Interpreter::calculatePairReadyCycle) ----
+    # ACC results are visible one cycle after issue and the next pair issues at least one cycle
+    # later, so ACC reads never stall: no ACC checks or ready cycles are emitted.
     terms = []
     for us in (uu, lu):
         for reg, lanes in us.vf_read:
             if reg == 0:
                 continue
             for k in comps(lanes):
-                terms.append(f"c.vfReady[{reg}][{k}]")
+                if need is None or need("vf", reg, k):
+                    terms.append(f"c.vfReady[{reg}][{k}]")
         for r in sorted(us.vi_read):
-            terms.append(f"c.viReady[{r}]")
-        for k in comps(us.acc_read):
-            terms.append(f"c.accReady[{k}]")
+            if need is None or need("vi", r, 0):
+                terms.append(f"c.viReady[{r}]")
     for t in dict.fromkeys(terms):
         out.append(f"if ({t} > c.cyc) c.cyc = {t};")
     if lu.pipeline == "fdiv":
@@ -747,8 +764,6 @@ def emit_pair(pc, lo, up, prog):
     if uu.vf_write and uu.vf_write[0]:
         for k in comps(uu.vf_write[1]):
             out.append(f"c.vfReady[{uu.vf_write[0]}][{k}] = c.cyc + {uu.latency};")
-    for k in comps(uu.acc_write):
-        out.append(f"c.accReady[{k}] = c.cyc + 1;")
     if lu.vf_write and lu.vf_write[0]:
         for k in comps(lu.vf_write[1]):
             out.append(f"c.vfReady[{lu.vf_write[0]}][{k}] = c.cyc + {lu.latency};")
@@ -758,7 +773,8 @@ def emit_pair(pc, lo, up, prog):
         out.append(f"c.bkCyc = c.cyc + 1; c.bkReg = {old_vi}; c.bkVal = oldVi;")
     out.append("c.cyc += 1;")
     # ---- control flow: E-bit end, branch from the previous pair, this pair's branch ----
-    out.append("if (c.ebitPending) { c.ebitPending = false; c.pc = 0x%04xu; return vuaot::ExitEnd; }" % ((pc + 8) & 0x3FFF))
+    if ebit_check:
+        out.append("if (c.ebitPending) { c.ebitPending = false; c.pc = 0x%04xu; return vuaot::ExitEnd; }" % ((pc + 8) & 0x3FFF))
     if ebit:
         out.append("c.ebitPending = true;")
     if "branch" in branch:
@@ -772,15 +788,188 @@ def emit_pair(pc, lo, up, prog):
     return "\n".join(out), "branch" in branch
 
 
-def emit_program(name, base, code):
+FLAGS_LIVE = [True]  # set per pair by emit_program (FlagLiveness)
+
+MAC_READ_OPS = (0x18, 0x1A, 0x1B)     # FMEQ FMAND FMOR
+STATUS_READ_OPS = (0x14, 0x16, 0x17)  # FSEQ FSAND FSOR
+
+
+class FlagLiveness:
+    """Which FMAC pairs must produce MAC/status flags, for a VU1 program.
+
+    Evidence (tools/vu_recomp.py census of all 53 programs): no program reads the status flag
+    (FSAND/FSEQ/FSOR) and the EE has no access to VU1 flags, so VU1 status is unobservable;
+    MAC is read only by FMAND/FMEQ/FMOR. Every FMAC with a non-empty dest replaces the whole
+    MAC (lanes outside dest read 0). A write at pair i is dead when a later FMAC i' on the
+    straight-line path overwrites it and neither a MAC read in (i, i'+3] nor a departure from
+    the path after a pair in [i, i'+2] can observe it: from pair i'+4 on (and anywhere control
+    goes after pair i'+3) i' is visible, because each pair issues at least one cycle later.
+    VU0 programs keep every flag (the EE reads VU0 MAC/status with CFC2)."""
+
+    def __init__(self, base, code, keep_all):
+        pairs = len(code) // 8
+        self.live = [True] * pairs
+        if keep_all:
+            return
+        writes = [False] * pairs
+        reads = [False] * pairs
+        leaves = [False] * pairs  # control may not continue at the next pair
+        for i in range(pairs):
+            lo, up = struct.unpack_from("<II", code, i * 8)
+            ibit = bool(up & 0x80000000)
+            hi = (lo >> 25) & 0x7F
+            try:
+                upper_usage(up)
+                lower_usage(lo) if not ibit else None
+            except Unsupported:
+                leaves[i] = True
+                if i > 0:
+                    leaves[i - 1] = True
+                continue
+            writes[i] = fmac_writes_mac(up)
+            reads[i] = not ibit and (hi in MAC_READ_OPS or hi in STATUS_READ_OPS)
+            if not ibit and 0x20 <= hi <= 0x2F and i + 1 < pairs:
+                leaves[i + 1] = True  # delay slot: a taken branch leaves after it
+            if up & 0x40000000 and i + 1 < pairs:
+                leaves[i + 1] = True  # E-bit delay slot ends the program
+        leaves[pairs - 1] = True
+        for i in range(pairs):
+            if not writes[i]:
+                continue
+            kill = None
+            j = i
+            live = True
+            while True:
+                if leaves[j] and (kill is None or j <= kill + 2):
+                    break
+                j += 1
+                if j >= pairs:
+                    break
+                if reads[j] and (kill is None or j <= kill + 3):
+                    break
+                if kill is None and writes[j]:
+                    kill = j
+                if kill is not None and j >= kill + 3:
+                    live = False
+                    break
+            self.live[i] = live
+
+
+def fmac_writes_mac(up):
+    """True when the upper instruction pushes MAC/status flags (vuaot::fmacFlags)."""
+    dest = (up >> 21) & 0xF
+    if dest == 0:
+        return False
+    op = up & 0x3F
+    if op <= 0x2F:
+        # 0x00-0x1B: ADDbc SUBbc MADDbc MSUBbc MAXbc MINIbc MULbc; 0x1C-0x2F: q/i/vector forms.
+        # MAX/MINI (0x10-0x17, 0x1D, 0x1F, 0x2B, 0x2F) set no flags.
+        return not (0x10 <= op <= 0x17 or op in (0x1D, 0x1F, 0x2B, 0x2F))
+    sp = (up & 3) | ((up >> 4) & 0x7C)
+    # Special ops writing ACC set flags; ITOF/FTOI/ABS/CLIP/NOP do not.
+    return sp <= 0x0F or 0x18 <= sp <= 0x1C or sp == 0x1E or 0x20 <= sp <= 0x2A or 0x2C <= sp <= 0x2E
+
+
+MAX_LATENCY = {"vf": 4, "vi": 4}  # longest VF / VI write latency in upper_usage / lower_usage
+
+
+class HazardAnalysis:
+    """Static operand-stall elimination for one program.
+
+    A pair issues at least one cycle after the previous one, so a value written at pair i with
+    latency L is visible at pair j >= i + L of the same straight-line run. Control enters a run
+    only at its first pair (an entry point), at least one cycle after the previous pair issued,
+    so a value written before the entry is visible MAX_LATENCY - 1 pairs into the run. Checks
+    these rules prove satisfied are left out. Entry points: the program start, static branch
+    targets, return addresses (BAL/JALR + 16), the resume points after an E-bit (+16) and after
+    an unsupported pair, and the other programs' end addresses and branch targets outside
+    their own range (those continue in the program that owns the pc). Any other dispatch target first waits for every in-flight write
+    (vuaot::stallAll), which restores the entry assumption."""
+
+    def __init__(self, base, code, extra_entries=()):
+        pairs = len(code) // 8
+        self.entries = {0} | {(pc - base) // 8 for pc in extra_entries if base < pc < base + pairs * 8 and pc % 8 == 0}
+        self.targets = set()  # static branch targets, including ones outside this program
+        self.static_target = [None] * pairs  # per branch pair: its static target, if any
+        self.writes = []
+        uncond = []
+        ebit = []
+        for i in range(pairs):
+            pc = base + i * 8
+            lo, up = struct.unpack_from("<II", code, i * 8)
+            ibit = bool(up & 0x80000000)
+            try:
+                uu = upper_usage(up)
+                lu = Usage() if ibit else lower_usage(lo)
+            except Unsupported:
+                self.writes.append(None)
+                uncond.append(False)
+                ebit.append(False)
+                self.entries.add(i + 1)
+                continue
+            w = {}
+            if uu.vf_write and uu.vf_write[0]:
+                for k in comps(uu.vf_write[1]):
+                    w[("vf", uu.vf_write[0], k)] = uu.latency
+            if lu.vf_write and lu.vf_write[0]:
+                for k in comps(lu.vf_write[1]):
+                    w[("vf", lu.vf_write[0], k)] = lu.latency
+            for r in lu.vi_write:
+                w[("vi", r, 0)] = lu.vi_latency or lu.latency
+            for (f, _, _), lat in w.items():
+                assert lat <= MAX_LATENCY[f], (hex(pc), f, lat)
+            self.writes.append(w)
+            hi = (lo >> 25) & 0x7F
+            is_branch = not ibit and 0x20 <= hi <= 0x2F
+            if is_branch and hi not in (0x24, 0x25):
+                target = (pc + 8 + simm(lo & 0x7FF, 11) * 8) & 0x3FFF
+                self.targets.add(target)
+                self.static_target[i] = target
+                if base <= target < base + pairs * 8:
+                    self.entries.add((target - base) // 8)
+            if is_branch and hi in (0x21, 0x25):
+                self.entries.add(i + 2)
+            if up & 0x40000000:
+                self.entries.add(i + 2)
+            uncond.append(is_branch and hi in (0x20, 0x21, 0x24, 0x25))
+            ebit.append(bool(up & 0x40000000))
+        self.ebit = ebit
+        # start[j]: first pair of the straight-line run containing j. Pair j is reached by
+        # falling through from j - 1 unless j - 1 was unsupported or the delay slot of an
+        # unconditional branch or of an E-bit.
+        self.start = []
+        for j in range(pairs):
+            falls_in = (j > 0 and self.writes[j - 1] is not None
+                        and not (j >= 2 and (uncond[j - 2] or ebit[j - 2])))
+            self.start.append(self.start[j - 1] if falls_in and j not in self.entries else j)
+
+    def need(self, j):
+        def check(f, reg, lane):
+            m = self.start[j]
+            for i in range(j - 1, m - 1, -1):
+                lat = self.writes[i].get((f, reg, lane))
+                if lat is not None:
+                    return j - i < lat
+            return j - m < MAX_LATENCY[f] - 1
+        return check
+
+
+def emit_program(name, base, code, extra_entries=(), keep_flags=True):
     pairs = len(code) // 8
     end = base + pairs * 8
     body = []
+    ha = HazardAnalysis(base, code, extra_entries)
+    fl_live = FlagLiveness(base, code, keep_flags)
     for i in range(pairs):
         pc = base + i * 8
         lo, up = struct.unpack_from("<II", code, i * 8)
         try:
-            text, is_branch = emit_pair(pc, lo, up, None)
+            # An E-bit can be pending only in the pair after an E-bit pair, or on arrival at an
+            # entry point (a branch whose delay slot carries the E-bit, or chaining); other
+            # dispatch targets hand a pending E-bit to the interpreter (see the switch below).
+            FLAGS_LIVE[0] = fl_live.live[i]
+            text, is_branch = emit_pair(pc, lo, up, None, ha.need(i),
+                                        ebit_check=(i in ha.entries) or (i > 0 and ha.ebit[i - 1]))
         except Unsupported as ex:
             text = (f"L_{pc:04x}: {{ /* unsupported: {ex} */ c.pc = 0x{pc:04x}u; return vuaot::ExitFallback; }}")
             is_branch = False
@@ -790,13 +979,20 @@ def emit_program(name, base, code):
         if i > 0:
             plo, pup = struct.unpack_from("<II", code, (i - 1) * 8)
             prev_branch = not (pup & 0x80000000) and 0x20 <= ((plo >> 25) & 0x7F) <= 0x2F
-        if prev_branch:
+        static = ha.static_target[i - 1] if i > 0 else None
+        if prev_branch and static is not None and base <= static < end:
+            body.append("if (c.brTaken) { c.brTaken = false; "
+                        f"if (c.cyc >= c.budget) {{ c.pc = 0x{static:04x}u; return vuaot::ExitBudget; }} goto L_{static:04x}; }}")
+        elif prev_branch:
             body.append("if (c.brTaken) { c.brTaken = false; target = c.brTarget; "
                         f"if (c.cyc >= c.budget) {{ c.pc = target; return vuaot::ExitBudget; }} goto dispatch; }}")
         if is_branch and i == pairs - 1:
             # Delay slot is outside this payload: let the next program (or the interpreter) run it.
             body.append(f"c.pc = 0x{(pc + 8) & 0x3FFF:04x}u; return vuaot::ExitLeave;")
-    cases = "\n".join(f"case 0x{base + i * 8:04x}u: goto L_{base + i * 8:04x};" for i in range(pairs))
+    cases = "\n".join(f"case 0x{base + i * 8:04x}u: goto L_{base + i * 8:04x};" if i in ha.entries else
+                      f"case 0x{base + i * 8:04x}u: if (c.ebitPending) {{ c.pc = 0x{base + i * 8:04x}u; return vuaot::ExitFallback; }} "
+                      f"vuaot::stallAll(c, 0x{base + i * 8:04x}u); goto L_{base + i * 8:04x};"
+                      for i in range(pairs))
     return f"""
 uint32_t {name}(vuaot::Context &c, uint32_t pc)
 {{
@@ -815,6 +1011,11 @@ dispatch:
     return vuaot::ExitLeave;
 }}
 """
+
+
+def vutext_range(elf_path):
+    sec = Elf(elf_path).section(".vutext")
+    return sec.addr, sec.addr + sec.size
 
 
 def extract_mpg(elf_path):
@@ -853,9 +1054,22 @@ def main():
     decls = []
     entries = []
     unsupported = 0
+    for stale in os.listdir(outdir):
+        if stale.endswith(".cpp"):
+            os.remove(os.path.join(outdir, stale))
+    vu0_lo, vu0_hi = vutext_range(elf)
+    # Entry points seen by any program: a branch or a run off the end can continue in another
+    # program's code (the hook chains to the owner of the next pc).
+    program_ends = {(b + len(pl)) & 0x3FFF for b, pl, _ in progs}
+    for b, pl, _ in progs:
+        program_ends |= {t for t in HazardAnalysis(b, pl).targets if not b <= t < b + len(pl)}
+    program_ends = sorted(program_ends)
     for n, (base, payload, src) in enumerate(sorted(progs, key=lambda p: (p[2]))):
         name = f"vu1_prog_{n:02d}_{base:04x}"
-        text = emit_program(name, base, payload)
+        reads_status = any(((lo >> 25) & 0x7F) in (0x14, 0x16, 0x17) and not (up & 0x80000000)
+                           for lo, up in (struct.unpack_from("<II", payload, i) for i in range(0, len(payload), 8)))
+        KEEP_STICKY[0] = reads_status or vu0_lo <= src < vu0_hi
+        text = emit_program(name, base, payload, program_ends, keep_flags=vu0_lo <= src < vu0_hi or reads_status)
         unsupported += text.count("/* unsupported")
         with open(os.path.join(outdir, f"{name}.cpp"), "w", newline="\n") as f:
             f.write(header + f"// MPG payload at ELF 0x{src:08x}: {len(payload) // 8} pairs loaded at VU1 0x{base:04x}\n")

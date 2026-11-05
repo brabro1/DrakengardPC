@@ -7,7 +7,7 @@ namespace dkg
 {
     const GameIdentity &supportedGame()
     {
-        // Values observed from a Redump-verified dump; see RESEARCH.md "Game build".
+        // Values observed from a Redump-verified dump; see docs/RESEARCH.md "Game build".
         static const GameIdentity id{
             "Drakengard",
             "SLUS-20732",

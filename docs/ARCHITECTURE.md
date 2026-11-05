@@ -126,7 +126,7 @@ Vulkan. This may require an MSVC/clang-cl build (see "Toolchain").
 ## Toolchain
 
 - MSYS2 CLANG64: clang 23.1.4, lld, CMake 4.4.5, Ninja 1.13.2, FFmpeg 8 (libavcodec 63) —
-  installed at `D:\msys64` (not C:, which has ~5 GB free).
+  any install location works (set `MSYS2_CLANG64_BIN` if it is not on `PATH`).
 - Python 3.13 for the analysis pipeline.
 - MSVC is PS2Recomp upstream's primary Windows compiler; our build keeps the code
   compatible with it. Moving to MSVC/clang-cl later (likely needed for DLSS/Streamline

@@ -209,6 +209,9 @@ private:
     uint64_t m_cachedCodeGeneration = 0;
     bool m_decodedCodeCacheValid = false;
 
+    // False while the pipeline/ready arrays below still hold their reset state (nothing was
+    // interpreted since the last resetScheduler): compiled programs never touch them.
+    bool m_schedulerDirty = true;
     std::array<FlagPipelineEntry, kMaxFlagEntries> m_flagPipeline{};
     ScalarPipelineEntry m_fdiv{};
     std::array<ScalarPipelineEntry, 2> m_efu{};

@@ -1,45 +1,81 @@
 # DrakengardPC
 
-An unofficial native Windows port of **Drakengard** (PlayStation 2, NTSC-U `SLUS-20732`
-v1.00), built by statically recompiling the game's original MIPS R5900 executable to C++
-with [PS2Recomp](https://github.com/ran-j/PS2Recomp). Not affiliated with Square Enix or
-Cavia.
+An unofficial **native Windows port of Drakengard** (PlayStation 2, NTSC-U `SLUS-20732`
+v1.00). The game's own code is translated ahead of time into C++ and compiled into a normal
+Windows program that runs on your CPU, and its graphics are drawn by your GPU. It is not an
+emulator that interprets the game while it runs.
 
-> **No game files are included or distributed.** You need your own disc image of
-> Drakengard (USA). Everything derived from it (extracted ELF, generated C++, saves)
-> is created locally under `work/` and is never committed.
+Not affiliated with or endorsed by Square Enix or Cavia.
 
-## Status: early bring-up (title screen and menus reached; no gameplay yet)
+> **No game files are included.** You need your own disc image of Drakengard (USA). The
+> build reads it locally and writes everything derived from it (the extracted program,
+> the generated C++, saves) to `work/`, which is never committed or shared.
 
-What is verified on the reference machine (see [PROGRESS.md](PROGRESS.md)):
+---
 
-- The whole EE executable is translated: 8,315 functions, 0 decode failures, 0 unhandled
-  instructions; `DrakengardPC.exe` links all of it.
-- The native executable boots the original game code: crt0 → kernel init → the game
-  loads all 8 IOP modules from the disc (run by the IOP interpreter), finds its data
-  archives at their real disc sectors, registers its interrupt handlers, runs its
-  frame/task loop, shows the Square Enix, Cavia and Project Dragonsphere logos, and reaches
-  the **title screen**. Controller input works (the game switches the virtual DualShock 2
-  to analog + pressure mode). New Game plays the prologue, "Chapter 1 — Beginnings" and the
-  mission briefing, loads, and renders the first mission (terrain, Caim, HUD, radio
-  message, objective map).
-- **Not yet**: verified gameplay (movement/combat), playable speed (~2 VSync/s in the mission: interpreted VU1 and a
-  single-threaded software GS), audio, movies, saves. There is no playable gameplay. See [PROGRESS.md](PROGRESS.md) for the blockers.
+## Status
+
+Early but real: the game boots, the menus work and the first mission runs at **full speed**
+on the reference PC (Intel i5-12400F, RTX 3060) — the PS2's 60 VSyncs per second — with
+small dips in the heaviest scene measured so far.
+
+| Area | State |
+|---|---|
+| Boot, logos, title screen, menus, New Game, story intro | working, full speed |
+| First mission: walking, attacking, HUD, map | working, full speed (56–62 VSync/s near the fortress gate) |
+| Rest of the game (later missions, dragon flight, story, endings) | not yet verified |
+| Audio, movies (FMV), memory card saves | not yet |
+| High resolution, widescreen, uncapped frame rate, DLSS/FSR | planned (see [docs/FEATURES.md](docs/FEATURES.md)) |
+
+Details, measurements and the next steps are in [docs/PROGRESS.md](docs/PROGRESS.md).
+
+## How it works
+
+The PlayStation 2 has several processors. Each one is handled like this:
+
+| PS2 part | What it does in the game | In DrakengardPC |
+|---|---|---|
+| EE (main CPU, MIPS R5900) | game logic, AI, physics | **translated to C++** ahead of time (8,315 functions) and compiled natively |
+| VU0 / VU1 (vector units) | transforms, lighting, building draw lists | **microprograms translated to C++** ahead of time (53 programs) |
+| GS (graphics chip) | rasterising triangles | drawn on the **GPU** with [paraLLEl-GS](https://github.com/Arntzen-Software/parallel-gs) (Vulkan compute) |
+| IOP (I/O CPU) | disc, sound and controller drivers | small interpreter (an emulated support component) |
+| DMA, timers, interrupts | glue between the chips | C++ runtime ([PS2Recomp](https://github.com/ran-j/PS2Recomp), extended here) |
+
+More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Requirements
 
-- Windows 10/11 x64, a CPU with AVX2 by default (Haswell / Zen 1 or newer; configure with
-  `-DDRAKENGARD_HOST_AVX2=OFF` for SSE4.1-only CPUs). Developed on an i5-12400F, RTX 3060.
-- Your own `Drakengard (USA).iso` (Redump MD5 `300f66970511bf6133cf3af11ffd2a13`).
-- To build: MSYS2 with the CLANG64 toolchain, CMake, Ninja, FFmpeg; Python 3.11+.
+- Windows 10/11, 64-bit; a CPU with AVX2 (Intel Haswell / AMD Zen or newer).
+- A GPU with an up-to-date Vulkan driver (tested: NVIDIA RTX 3060; paraLLEl-GS uses Vulkan
+  compute shaders).
+- Your own `Drakengard (USA).iso` (Redump MD5 `300f66970511bf6133cf3af11ffd2a13`). Other
+  releases (PAL, Japanese) are refused.
+- To build: [MSYS2](https://www.msys2.org/) with the CLANG64 toolchain, and Python 3.11+.
+- About 3 GB of free disk space for `work/` and `build/`.
 
-## Build
+## Building
+
+All commands run in a Git Bash or MSYS2 shell from the repository folder.
+
+**1. Get the source and the toolchain**
+
+```bash
+git clone --recursive https://github.com/brabro1/DrakengardPC.git
+```
+
+In an MSYS2 shell:
 
 ```bash
 pacman -S --needed mingw-w64-clang-x86_64-toolchain mingw-w64-clang-x86_64-cmake mingw-w64-clang-x86_64-ninja mingw-w64-clang-x86_64-pkgconf mingw-w64-clang-x86_64-ffmpeg
 ```
 
-1. Build the recompiler tools (once):
+Then put the CLANG64 tools on `PATH` in the shell you build from (adjust the MSYS2 location):
+
+```bash
+export PATH=/c/msys64/clang64/bin:$PATH
+```
+
+**2. Build the recompiler (once)**
 
 ```bash
 cmake -S external/PS2Recomp -B build/ps2recomp -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_FLAGS=-msse4.1 -DCMAKE_CXX_FLAGS=-msse4.1 -DPS2X_BUILD_STUDIO=OFF -DPS2X_ENABLE_SCCACHE=OFF -DFETCHCONTENT_BASE_DIR=build/_deps
@@ -49,13 +85,13 @@ cmake -S external/PS2Recomp -B build/ps2recomp -G Ninja -DCMAKE_BUILD_TYPE=Relea
 cmake --build build/ps2recomp --target ps2_recomp ps2_analyzer ps2x_tests
 ```
 
-2. Generate the game code from your disc (writes `work/`, ~150 MB of C++):
+**3. Translate the game from your disc** (writes about 150 MB of C++ to `work/`)
 
 ```bash
-python -I tools/recomp.py "D:/ps2/games/Drakengard (USA).iso"
+python -I tools/recomp.py "path/to/Drakengard (USA).iso"
 ```
 
-3. Build the game (about 10 minutes on 12 threads):
+**4. Build the game** (about 10 minutes on 12 threads)
 
 ```bash
 cmake -S . -B build/game -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG" -DFETCHCONTENT_BASE_DIR=build/_deps
@@ -65,27 +101,51 @@ cmake -S . -B build/game -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=
 cmake --build build/game --target DrakengardPC
 ```
 
-## Run
-
-FFmpeg DLLs come from MSYS2, so put `D:\msys64\clang64\bin` on `PATH` (packaging comes later).
+## Playing
 
 ```bash
-build/game/DrakengardPC.exe --iso "D:/ps2/games/Drakengard (USA).iso" --data work
+build/game/DrakengardPC.exe --iso "path/to/Drakengard (USA).iso" --data work
 ```
 
-Controls (keyboard): arrows/WASD = d-pad, X or Space = ✕, C = ○, Z = □, V = △, Enter = Start,
-Tab = Select, Q/E = L1/R1, Shift = L2/R2. A connected gamepad is used instead when present.
+The CLANG64 `bin` folder must be on `PATH` (the game uses its FFmpeg and C++ runtime DLLs).
 
-Options: `--max-seconds N` exits after N seconds (automated boot tests). Environment:
-`PS2X_FRAME_DUMP_DIR=<dir>` (and `PS2X_FRAME_DUMP_EVERY=N`) saves presented frames as PNG;
-`PS2X_PAD_SCRIPT="1300:start:10,1600:cross:10"` presses buttons at given VSync ticks;
-`PS2X_GS_DEBUG_NOFOG=1` ignores the GS fog enable (diagnostic);
-`DKG_TRACE_FUNCS=0xADDR,...` (with `DKG_TRACE_MEM`, `DKG_TRACE_SKIP`, `DKG_TRACE_LIMIT`)
-logs calls to recompiled functions; `DKG_PROFILE=<file>` writes a sampling profile
-(summarise with `tools/profile_report.py`).
-Configure with `-DDRAKENGARD_TRACE_CALLS=ON` to log every guest call (slow, huge output).
+**Controls.** A connected gamepad is used when present. Keyboard: arrows or WASD = D-pad,
+X or Space = ✕, C = ○, Z = □, V = △, Enter = Start, Tab = Select, Q / E = L1 / R1,
+Shift = L2 / R2.
 
-The launcher verifies the disc's boot ELF (SHA-1 `652d95f1…`) and refuses any other release.
+**Options.** `--max-seconds N` quits after N seconds. Useful environment variables:
+
+| Variable | Effect |
+|---|---|
+| `PS2X_GS_RENDERER=cpu` | use the software renderer instead of the GPU |
+| `PS2X_GS_SSAA=N` | supersample the GPU renderer N× |
+| `PS2X_FRAME_DUMP_DIR=<folder>` | save every 60th frame as PNG (`PS2X_FRAME_DUMP_EVERY=N` to change) |
+| `PS2X_PAD_SCRIPT="1300:start:10,..."` | press buttons at given VSync ticks (automated tests) |
+| `PS2X_VU_AOT=0` | run vector-unit code in the interpreter (slow; for comparison) |
+| `DKG_PROFILE=<file>` | write a sampling profile (`tools/profile_report.py` summarises it) |
+
+Developer diagnostics (tracing, rendering probes, profiling) are listed in [CLAUDE.md](CLAUDE.md).
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| "avcodec-63.dll was not found" | put the MSYS2 `clang64/bin` folder on `PATH` |
+| `[disc] unsupported revision` at start-up | only Drakengard (USA) v1.00 is supported (boot ELF SHA-1 `652d95f1…`) |
+| black window, Vulkan errors | update the GPU driver, or try `PS2X_GS_RENDERER=cpu` |
+| `No generated code in work/recomp/generated` when configuring | run step 3 first |
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| `src/` | the port: start-up, disc reader, game identity check, game-specific overrides |
+| `tools/` | the translation pipeline (`recomp.py`, `vu_recomp.py`) and analysis/debug tools |
+| `tests/` | pipeline tests |
+| `external/PS2Recomp/` | recompiler and PS2 runtime (vendored, with this project's changes) |
+| `external/parallel-gs/` | GPU graphics renderer (git submodule) |
+| `docs/` | architecture, progress log, features, compatibility, research notes, modding |
+| `work/` | created locally from your disc; never committed |
 
 ## Tests
 
@@ -99,12 +159,18 @@ cd external/PS2Recomp && ../../build/ps2recomp/ps2xTest/ps2x_tests.exe
 
 ## Documentation
 
-[ARCHITECTURE.md](ARCHITECTURE.md) · [PROGRESS.md](PROGRESS.md) · [FEATURES.md](FEATURES.md) ·
-[COMPATIBILITY.md](COMPATIBILITY.md) · [RESEARCH.md](RESEARCH.md) · [MODDING.md](MODDING.md) ·
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- [docs/PROGRESS.md](docs/PROGRESS.md): milestones, measurements, session log
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the port is built and why
+- [docs/FEATURES.md](docs/FEATURES.md): feature matrix (planned / implemented / verified)
+- [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md): known issues and tested setups
+- [docs/RESEARCH.md](docs/RESEARCH.md): evidence for addresses, formats and findings
+- [docs/MODDING.md](docs/MODDING.md): plans for mod support
 
 ## License
 
-Not yet chosen by the project owner. This repository includes PS2Recomp (GPL-3.0) under
-`external/PS2Recomp`, so any distributed build must comply with the GPL-3.0. See
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+DrakengardPC is free software under the **GNU General Public License v3.0** ([LICENSE](LICENSE)),
+the same license as PS2Recomp, which it includes. paraLLEl-GS is LGPL-3.0-or-later. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for every component and its license.
+
+The license covers this project's source code only. Drakengard and all of its content are the
+property of their owners; nothing from the game is distributed here.

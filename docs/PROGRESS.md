@@ -18,16 +18,16 @@
 
 **Inspected**
 - Workspace empty; Windows 11 Pro 26300; i5-12400F (6C/12T); RTX 3060 (driver 32.0.16.2101);
-  31.8 GB RAM; C: 5.3 GB free, D: 86.9 GB free.
-- Tools present: git 2.54, gh (logged in as `brabro1`, `repo` scope), Python 3.13, Node 24,
-  Java 8. No C/C++ compiler, CMake or Ninja.
+  31.8 GB RAM.
+- Tools present: git 2.54, GitHub CLI, Python 3.13, Node 24, Java 8. No C/C++ compiler,
+  CMake or Ninja.
 - Disc: Redump-verified Drakengard (USA) SLUS-20732 v1.00 (MD5 `300f6697…`); boot ELF SHA-1
   `652d95f1…`, PCSX2 CRC `9679D44C`. Full inventory in RESEARCH.md.
 - PS2Recomp, the Bloodborne PC reference, PCSX2's game database and patches, and five
   PS2Recomp-based ports (structure and approach).
 
-**Installed** (on D:, no admin, no license prompts)
-- MSYS2 base 2026-09-27 (`D:\msys64`, SHA-256 checked against the release) with CLANG64
+**Installed** (no admin, no license prompts)
+- MSYS2 base 2026-09-27 (SHA-256 checked against the release) with CLANG64
   toolchain: clang 23.1.4, lld, CMake 4.4.5, Ninja 1.13.2, FFmpeg (libavcodec 63.1.102).
 
 **Built and ran**

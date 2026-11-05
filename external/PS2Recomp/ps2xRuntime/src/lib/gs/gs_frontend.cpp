@@ -640,6 +640,65 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
     return true;
 }
 
+namespace
+{
+    // A raw-GIF backend (paraLLEl-GS) draws straight from the packets. The frontend then only
+    // needs the registers whose effects live outside the GS: SIGNAL/FINISH/LABEL (CSR bits,
+    // interrupts) and the transfer registers (local->host readback). Visits those A+D writes.
+    template <typename Fn>
+    void forEachSideEffectWrite(const uint8_t *data, uint32_t sizeBytes, Fn &&fn)
+    {
+        uint32_t offset = 0;
+        while (offset + 16u <= sizeBytes)
+        {
+            const uint64_t tagLo = loadLE64(data + offset);
+            const uint64_t tagHi = loadLE64(data + offset + 8);
+            offset += 16u;
+            const uint32_t nloop = static_cast<uint32_t>(tagLo & 0x7FFFu);
+            const uint32_t flg = static_cast<uint32_t>((tagLo >> 58) & 0x3u);
+            uint32_t nreg = static_cast<uint32_t>((tagLo >> 60) & 0xFu);
+            if (nreg == 0u)
+                nreg = 16u;
+            if (flg == GIF_FMT_PACKED)
+            {
+                bool hasAd = false;
+                for (uint32_t r = 0; r < nreg; ++r)
+                    hasAd |= ((tagHi >> (r * 4u)) & 0xFu) == 0xEu;
+                if (!hasAd)
+                {
+                    offset += nloop * nreg * 16u;
+                    continue;
+                }
+                for (uint32_t loop = 0; loop < nloop; ++loop)
+                {
+                    for (uint32_t r = 0; r < nreg; ++r)
+                    {
+                        if (offset + 16u > sizeBytes)
+                            return;
+                        if (((tagHi >> (r * 4u)) & 0xFu) == 0xEu)
+                        {
+                            const uint8_t addr = data[offset + 8];
+                            if ((addr >= GS_REG_BITBLTBUF && addr <= GS_REG_TRXDIR) ||
+                                (addr >= GS_REG_SIGNAL && addr <= GS_REG_LABEL))
+                                fn(addr, loadLE64(data + offset));
+                        }
+                        offset += 16u;
+                    }
+                }
+            }
+            else if (flg == GIF_FMT_REGLIST)
+            {
+                // REGLIST descriptors only name registers 0x00-0x0F; A+D is not output.
+                offset += ((nloop * nreg + 1u) & ~1u) * 8u;
+            }
+            else
+            {
+                offset += nloop * 16u;
+            }
+        }
+    }
+}
+
 void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes, uint32_t path)
 {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
@@ -647,7 +706,12 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes, uint32_t path
         return;
 
     if (m_backend->WantsRawGif())
+    {
         m_backend->RawGifPacket(path, data, sizeBytes);
+        forEachSideEffectWrite(data, sizeBytes, [&](uint8_t addr, uint64_t value)
+                               { writeRegisterUnlocked(addr, value); });
+        return;
+    }
 
     if (tryProcessNativeImageUploadPacket(data, sizeBytes))
         return;
@@ -752,7 +816,12 @@ bool GS::processNativePackedGIFPacket(const uint8_t *data, uint32_t sizeBytes)
         return false;
 
     if (m_backend->WantsRawGif())
+    {
         m_backend->RawGifPacket(3u, data, sizeBytes);
+        forEachSideEffectWrite(data, sizeBytes, [&](uint8_t addr, uint64_t value)
+                               { writeRegisterUnlocked(addr, value); });
+        return true;
+    }
 
     const bool processed = visitPackedGifPacket(data, sizeBytes, [&](const PackedGifPacketTag &tag)
                                                 {

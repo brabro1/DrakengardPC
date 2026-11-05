@@ -39,3 +39,10 @@ __pycache__/
 
 # Runtime trace output (written to the current directory)
 ps2_log.txt
+
+# PS2Recomp test runs create empty memory-card folders
+external/PS2Recomp/mc0/
+external/PS2Recomp/mc1/
+
+# Machine-specific assistant notes
+CLAUDE.local.md

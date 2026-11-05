@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import os
 import shutil
 import struct
 import subprocess
@@ -30,7 +31,8 @@ def image_base(exe: str) -> int:
 
 
 def symbolize(exe: str, addrs: list[int]) -> dict[int, str]:
-    tool = shutil.which("llvm-symbolizer") or r"D:\msys64\clang64\bin\llvm-symbolizer.exe"
+    tool = shutil.which("llvm-symbolizer") or os.path.join(
+        os.environ.get("MSYS2_CLANG64_BIN", r"C:\msys64\clang64\bin"), "llvm-symbolizer.exe")
     out = subprocess.run([tool, "--obj=" + exe, "--demangle", "--no-inlines", "--output-style=JSON"],
                          input="\n".join(f"0x{a:x}" for a in addrs) + "\n",
                          capture_output=True, text=True).stdout

@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <vector>
 
@@ -61,6 +62,9 @@ namespace vuaot
             int32_t program = -1;
         };
         Owner g_maps[2][kVu1Pairs];
+        // Payload of each program once an upload matched its hash: later uploads are compared
+        // with memcmp (vectorised) instead of re-hashing byte by byte.
+        std::vector<std::vector<uint8_t>> g_verified;
         uint64_t g_matched = 0, g_unmatched[2] = {0, 0};
 
         void onUpload(uint32_t unit, uint32_t destBytes, const uint8_t *data, uint32_t bytes);
@@ -97,19 +101,43 @@ namespace vuaot
         Owner *map = g_maps[unit];
         if (programs().empty() || bytes == 0u)
             return;
-        const uint64_t hash = fnv1a(data, bytes);
-        int32_t match = -1;
         const auto &all = programs();
-        for (size_t i = 0; i < all.size(); ++i)
+        if (g_verified.size() != all.size())
+            g_verified.resize(all.size());
+        int32_t match = -1;
+        uint64_t hash = 0;
+        bool hashed = false;
+        for (size_t i = 0; i < all.size() && match < 0; ++i)
         {
-            if (all[i].base == destBytes && all[i].bytes == bytes && all[i].hash == hash)
+            if (all[i].base != destBytes || all[i].bytes != bytes)
+                continue;
+            const std::vector<uint8_t> &known = g_verified[i];
+            if (!known.empty())
+            {
+                if (std::memcmp(known.data(), data, bytes) == 0)
+                    match = static_cast<int32_t>(i);
+                continue;
+            }
+            if (!hashed)
+            {
+                hash = fnv1a(data, bytes);
+                hashed = true;
+            }
+            if (all[i].hash == hash)
             {
                 match = static_cast<int32_t>(i);
-                break;
+                g_verified[i].assign(data, data + bytes);
             }
         }
         const uint32_t first = destBytes / 8u;
         const uint32_t count = bytes / 8u;
+        // Re-upload of a program that is still mapped: a partial overwrite always unmaps a whole
+        // program, so an intact first pair means the whole range is intact.
+        if (match >= 0 && map[first % pairsInMemory].program == match)
+        {
+            ++g_matched;
+            return;
+        }
         // A program partly overwritten is no longer valid anywhere (its internal jumps would
         // reach the new code through stale labels).
         for (uint32_t i = 0; i < count; ++i)
@@ -135,7 +163,7 @@ namespace vuaot
         {
             char name[600];
             std::snprintf(name, sizeof(name), "%s/vu%u_%04x_%u_%016llx.bin", s_dumpDir, unit, destBytes, bytes,
-                          static_cast<unsigned long long>(hash));
+                          static_cast<unsigned long long>(fnv1a(data, bytes)));
             if (FILE *existing = std::fopen(name, "rb"))
                 std::fclose(existing);
             else if (FILE *f = std::fopen(name, "wb"))
@@ -161,5 +189,19 @@ namespace vuaot
     ProgramFn lookupVu0(uint32_t pc)
     {
         return g_maps[0][(pc / 8u) % (kVu1Pairs / 4u)].fn;
+    }
+}
+
+namespace vuaot
+{
+    // Diagnostics: the first stall at each unpredicted entry pc (PS2X_VU_AOT_ENTRY_LOG=1).
+    void noteEntryStall(uint32_t pc)
+    {
+        static const bool on = [] { const char *v = std::getenv("PS2X_VU_AOT_ENTRY_LOG"); return v && *v == '1'; }();
+        static bool seen[0x4000 / 8]{};
+        if (!on || seen[(pc / 8) & 0x7FFu])
+            return;
+        seen[(pc / 8) & 0x7FFu] = true;
+        std::fprintf(stderr, "[vu-aot:entry-stall] pc=0x%04x\n", pc);
     }
 }

@@ -97,7 +97,7 @@ if(DRAKENGARD_VU1_SOURCES)
     target_link_libraries(drakengard_vu1 PUBLIC ps2_runtime)
     if(NOT MSVC)
         # Values must match the interpreter: no FMA contraction, no fast-math.
-        target_compile_options(drakengard_vu1 PRIVATE -O2 -msse4.1 -ffp-contract=off
+        target_compile_options(drakengard_vu1 PRIVATE -O2 -g1 -msse4.1 -ffp-contract=off
             -Wno-unused-label -Wno-unused-variable -Wno-unused-but-set-variable)
     endif()
 endif()

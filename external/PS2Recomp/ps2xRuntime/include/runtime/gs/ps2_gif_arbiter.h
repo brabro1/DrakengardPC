@@ -35,12 +35,14 @@ public:
     void submit(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool path2DirectHl = false);
 
     void drain();
-    bool empty() const { return m_queue.empty(); }
+    bool empty() const { return m_count == 0u; }
 
 private:
     ProcessPacketFn m_processFn;
     GifPathId m_currentPath = GifPathId::Path3;
+    // Slots are reused across drains (their buffers keep capacity): no per-packet allocation.
     std::vector<GifArbiterPacket> m_queue;
+    size_t m_count = 0;
 
     static bool isImagePacket(const uint8_t *data, uint32_t sizeBytes);
     static uint8_t pathPriority(GifPathId id);

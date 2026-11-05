@@ -1,6 +1,7 @@
-#if defined(PS2X_HAVE_PARALLEL_GS)
 #include "runtime/vu_aot.h"
 #include "runtime/ee_wait_loops.h"
+#include "runtime/wait_stats.h"
+#if defined(PS2X_HAVE_PARALLEL_GS)
 #include "runtime/gs/gs_parallel_backend.h"
 #endif
 #include "ps2_runtime.h"
@@ -2570,7 +2571,17 @@ void PS2Runtime::run()
                                               << " gif=" << static_cast<int>((gif - lastGif) / span)
                                               << " vu-interp(k pairs): vu0=" << vuaot::g_interpretedPairs[0].exchange(0) / 1000
                                               << " vu1=" << vuaot::g_interpretedPairs[1].exchange(0) / 1000
-                                              << " vu1-aot(k cyc)=" << vuaot::g_compiledCycles.exchange(0) / 1000 << std::endl);
+                                              << " vu1-aot(k cyc)=" << vuaot::g_compiledCycles.exchange(0) / 1000
+                                              << " aot-entry-stalls=" << vuaot::g_entryStalls.exchange(0)
+                                              << " wait(ms): pacing=" << ps2x::waitstats::g_waitMicros[ps2x::waitstats::Pacing].exchange(0) / 1000
+                                              << " idle=" << ps2x::waitstats::g_waitMicros[ps2x::waitstats::Idle].exchange(0) / 1000
+                                              << " gsdrain=" << ps2x::waitstats::g_waitMicros[ps2x::waitstats::GsDrain].exchange(0) / 1000
+                                              << " transfers: exit=" << ps2x::waitstats::g_transfers[0].exchange(0)
+                                              << " resched=" << ps2x::waitstats::g_transfers[1].exchange(0)
+                                              << " invoke=" << ps2x::waitstats::g_transfers[2].exchange(0)
+                                              << " seq=" << ps2x::waitstats::g_transfers[3].exchange(0)
+                                              << " block=" << ps2x::waitstats::g_transfers[4].exchange(0)
+                                              << std::endl);
             if (g_checkpointProfile && !g_checkpointSites.empty())
             {
                 std::vector<std::pair<uint32_t, uint32_t>> sites(g_checkpointSites.begin(), g_checkpointSites.end());

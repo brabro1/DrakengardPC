@@ -130,6 +130,71 @@ namespace
             return static_cast<uint32_t>(static_cast<int32_t>(static_cast<int8_t>(raw)));
         };
 
+        // Fast path for the common case: no write mask, no row add (MODE 0), every write cycle
+        // reads a source vector (CL >= WL) and a defined format. Each write then takes the decoded
+        // vector as is (lanes past VN keep their old value, S formats broadcast), exactly as the
+        // general loop below computes it.
+        if (!maskEnable && (regs.mode & 3u) == 0u && cl >= wl && !(vl == 3u && vn != 3u))
+        {
+            for (uint32_t writeIndex = 0; writeIndex < writeVectorCount; ++writeIndex)
+            {
+                const uint32_t destVec = (vuAddr + (writeIndex / wl) * cl + (writeIndex % wl)) & addrMask;
+                const uint32_t destOff = destVec * 16u;
+                if (destOff + 16u > vuDataSize)
+                    continue;
+                const uint8_t *srcVec = data + writeIndex * bytesPerVector;
+                uint8_t *dst = vuData + destOff;
+                uint32_t v[4];
+                if (vl == 0u)
+                {
+                    if (components == 4u)
+                    {
+                        std::memcpy(dst, srcVec, 16u);
+                        continue;
+                    }
+                    for (uint32_t c = 0; c < components; ++c)
+                        std::memcpy(&v[c], srcVec + c * 4u, 4u);
+                }
+                else if (vl == 1u)
+                {
+                    for (uint32_t c = 0; c < components; ++c)
+                    {
+                        uint16_t raw;
+                        std::memcpy(&raw, srcVec + c * 2u, 2u);
+                        v[c] = extend16(raw);
+                    }
+                }
+                else if (vl == 2u)
+                {
+                    for (uint32_t c = 0; c < components; ++c)
+                        v[c] = extend8(srcVec[c]);
+                }
+                else
+                {
+                    uint16_t packed;
+                    std::memcpy(&packed, srcVec, 2u);
+                    v[0] = (packed & 0x001Fu) << 3;
+                    v[1] = (packed & 0x03E0u) >> 2;
+                    v[2] = (packed & 0x7C00u) >> 7;
+                    v[3] = (packed & 0x8000u) >> 8;
+                    std::memcpy(dst, v, 16u);
+                    continue;
+                }
+                if (components == 1u)
+                {
+                    v[1] = v[2] = v[3] = v[0];
+                    std::memcpy(dst, v, 16u);
+                }
+                else
+                {
+                    // Constant-size copies (a variable-size memcpy becomes a library call).
+                    for (uint32_t c = 0; c < components; ++c)
+                        std::memcpy(dst + c * 4u, &v[c], 4u);
+                }
+            }
+            return totalBytes;
+        }
+
         uint32_t srcIndex = 0u;
         for (uint32_t writeIndex = 0; writeIndex < writeVectorCount; ++writeIndex)
         {

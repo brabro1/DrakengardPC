@@ -50,8 +50,12 @@ namespace vuaot
         uint32_t viReady[16]{};
         uint32_t accReady[4]{};
 
-        FlagEntry flags[32]{};
-        uint32_t flagCount = 0;
+        // In-flight flag writes: a ring of the 16 newest entries in issue order (ready cycles are
+        // non-decreasing). At most two flag writes issue per cycle and they become visible after
+        // 4 cycles, so 16 entries span at least 8 cycles and an evicted entry is always due.
+        FlagEntry flags[16]{};
+        uint32_t flagHead = 0;  // next slot to write
+        uint32_t flagCount = 0; // uncommitted entries (the newest flagCount slots)
         uint32_t workingClip = 0;
 
         bool qPending = false;
@@ -149,6 +153,17 @@ namespace vuaot
         }
         return f;
     }
+    // Fast path for laneFlags: a normal, non-saturated float result has exactly the exact
+    // result's sign and no Z/U/O, and needs no fix-up. Returns 0xFF when the exact check is needed.
+    inline uint32_t fastFlags(float value)
+    {
+        uint32_t b;
+        std::memcpy(&b, &value, 4);
+        const uint32_t e = (b >> 23) & 0xFFu;
+        if (e - 1u < 254u && (b & 0x7FFFFFFFu) != 0x7F7FFFFFu)
+            return (b >> 31) ? 2u : 0u;
+        return 0xFFu;
+    }
     inline uint32_t productSticky(float a, float b)
     {
         float p = a * b;
@@ -156,37 +171,40 @@ namespace vuaot
     }
 
     // ---- pipelines ----
+    inline void applyFlags(Context &c, const FlagEntry &e)
+    {
+        if (e.kind & 1u)
+        {
+            c.s->mac = e.mac;
+            const uint32_t cur = e.status & 0xFu;
+            c.s->status = (c.s->status & 0xFF0u) | cur | ((cur | e.extraSticky) << 6);
+        }
+        if (e.kind & 2u)
+            c.s->status = (c.s->status & 0x03Fu) | (e.status & 0xFC0u);
+        if (e.kind & 4u)
+            c.s->clip = e.clip;
+    }
     inline void commitFlags(Context &c, uint32_t upTo)
     {
-        if (c.flagCount == 0)
-            return;
-        uint32_t kept = 0;
-        for (uint32_t i = 0; i < c.flagCount; ++i)
+        while (c.flagCount != 0u)
         {
-            const FlagEntry &e = c.flags[i];
+            const FlagEntry &e = c.flags[(c.flagHead - c.flagCount) & 15u];
             if (e.ready > upTo)
-            {
-                c.flags[kept++] = e;
-                continue;
-            }
-            if (e.kind & 1u)
-            {
-                c.s->mac = e.mac;
-                const uint32_t cur = e.status & 0xFu;
-                c.s->status = (c.s->status & 0xFF0u) | cur | ((cur | e.extraSticky) << 6);
-            }
-            if (e.kind & 2u)
-                c.s->status = (c.s->status & 0x03Fu) | (e.status & 0xFC0u);
-            if (e.kind & 4u)
-                c.s->clip = e.clip;
+                break;
+            applyFlags(c, e);
+            --c.flagCount;
         }
-        c.flagCount = kept;
     }
     inline void pushFlags(Context &c, const FlagEntry &e)
     {
-        if (c.flagCount == 32)
-            commitFlags(c, c.flags[0].ready); // never expected: 32 in-flight entries
-        c.flags[c.flagCount++] = e;
+        if (c.flagCount == 16u)
+        {
+            applyFlags(c, c.flags[c.flagHead & 15u]); // oldest; already due (see Context::flags)
+            --c.flagCount;
+        }
+        c.flags[c.flagHead & 15u] = e;
+        c.flagHead = (c.flagHead + 1u) & 15u;
+        ++c.flagCount;
     }
     inline void fmacFlags(Context &c, uint32_t mac, uint32_t status, uint32_t extraSticky)
     {
@@ -200,16 +218,22 @@ namespace vuaot
     inline void fcset(Context &c, uint32_t imm)
     {
         c.workingClip = imm & 0xFFFFFFu;
-        for (uint32_t i = 0; i < c.flagCount; ++i)
-            if ((c.flags[i].kind & 4u) && c.flags[i].ready == c.cyc + 4u)
-                c.flags[i].kind &= ~4u;
+        for (uint32_t i = 1; i <= c.flagCount; ++i)
+        {
+            FlagEntry &e = c.flags[(c.flagHead - i) & 15u];
+            if ((e.kind & 4u) && e.ready == c.cyc + 4u)
+                e.kind &= ~4u;
+        }
         pushFlags(c, FlagEntry{c.cyc + 4u, 0u, 0u, 0u, c.workingClip, 4u});
     }
     inline void fsset(Context &c, uint32_t imm)
     {
-        for (uint32_t i = 0; i < c.flagCount; ++i)
-            if ((c.flags[i].kind & 1u) && c.flags[i].ready == c.cyc + 4u)
-                c.flags[i].kind &= ~1u;
+        for (uint32_t i = 1; i <= c.flagCount; ++i)
+        {
+            FlagEntry &e = c.flags[(c.flagHead - i) & 15u];
+            if ((e.kind & 1u) && e.ready == c.cyc + 4u)
+                e.kind &= ~1u;
+        }
         pushFlags(c, FlagEntry{c.cyc + 4u, 0u, imm & 0xFC0u, 0u, 0u, 2u});
     }
     inline void syncQ(Context &c)
@@ -318,4 +342,26 @@ namespace vuaot
     // Pairs executed by the interpreter instead of compiled code ([0]=VU0, [1]=VU1).
     inline std::atomic<uint64_t> g_interpretedPairs[2]{};
     inline std::atomic<uint64_t> g_compiledCycles{0};
+    // Entries at a pc the generator did not predict (see stallAll) that had to stall.
+    inline std::atomic<uint64_t> g_entryStalls{0};
+
+    // Entry at a pc the generator did not mark as an entry point: its static hazard analysis
+    // assumed only fall-through arrival there, so wait until every in-flight VF/VI write is
+    // visible. (Free on a fresh invocation, where all ready cycles are 0.)
+    void noteEntryStall(uint32_t pc);
+    inline void stallAll(Context &c, uint32_t pc)
+    {
+        uint32_t m = c.cyc;
+        for (const auto &reg : c.vfReady)
+            for (uint32_t v : reg)
+                m = v > m ? v : m;
+        for (uint32_t v : c.viReady)
+            m = v > m ? v : m;
+        if (m != c.cyc)
+        {
+            g_entryStalls.fetch_add(1, std::memory_order_relaxed);
+            noteEntryStall(pc);
+            c.cyc = m;
+        }
+    }
 }
