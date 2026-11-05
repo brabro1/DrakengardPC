@@ -1683,10 +1683,13 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
 
         // Ahead-of-time compiled VU1 microprograms (runtime/vu_aot.h). Entered only at a
         // clean instruction boundary; the interpreter handles code without a compiled version.
-        if (m_unit == Unit::VU1 && memory && vuCode == memory->getVU1Code() && m_state.pc != aotSkipPc &&
+        const bool aotUnitCode = memory && ((m_unit == Unit::VU1 && vuCode == memory->getVU1Code()) ||
+                                            (m_unit == Unit::VU0 && vuCode == memory->getVU0Code()));
+        if (aotUnitCode && m_state.pc != aotSkipPc &&
             !m_state.branchPending && !m_state.ebit && !m_state.haltAfterDelaySlot && vuaot::enabled())
         {
-            if (vuaot::ProgramFn fn = vuaot::lookupVu1(m_state.pc))
+            const auto lookup = m_unit == Unit::VU1 ? &vuaot::lookupVu1 : &vuaot::lookupVu0;
+            if (vuaot::ProgramFn fn = lookup(m_state.pc))
             {
                 flushPipelines();
                 static vuaot::Context ctx;
@@ -1717,7 +1720,7 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
                 uint32_t exit = fn(ctx, m_state.pc);
                 while (exit == vuaot::ExitLeave && !ctx.brTaken && ctx.cyc < ctx.budget)
                 {
-                    vuaot::ProgramFn next = vuaot::lookupVu1(ctx.pc);
+                    vuaot::ProgramFn next = lookup(ctx.pc);
                     if (!next)
                         break;
                     exit = next(ctx, ctx.pc);
@@ -1726,6 +1729,7 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
                 m_workingClip = ctx.workingClip;
                 m_state.pc = ctx.pc & microAddressMask();
                 m_cycle += ctx.cyc;
+                vuaot::g_compiledCycles.fetch_add(ctx.cyc, std::memory_order_relaxed);
                 if (exit == vuaot::ExitEnd)
                 {
                     programEnded = true;
@@ -1747,6 +1751,7 @@ void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
             }
         }
         aotSkipPc = 0xFFFFFFFFu;
+        vuaot::g_interpretedPairs[m_unit == Unit::VU1 ? 1 : 0].fetch_add(1, std::memory_order_relaxed);
 
         const DecodedInstructionPair decoded = getDecodedInstructionPairForPc(vuCode, codeSize, memory, m_state.pc);
         if (decoded.upperUsage.reserved || decoded.lowerUsage.reserved)

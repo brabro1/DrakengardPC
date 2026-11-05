@@ -11,6 +11,10 @@
 #include <cstdint>
 #include <iostream>
 
+#if defined(DRAKENGARD_HAVE_VU1_AOT)
+void drakengardRegisterVuPrograms();
+#endif
+
 namespace dkg::debug
 {
     void installTraceHooks(PS2Runtime &runtime);
@@ -42,6 +46,10 @@ namespace
                       << std::hex << b.address << std::dec << " -> native " << b.handler << " (" << b.reason << ")"
                       << std::endl;
         }
+#if defined(DRAKENGARD_HAVE_VU1_AOT)
+        // VU1 microprograms compiled ahead of time (tools/vu_recomp.py).
+        drakengardRegisterVuPrograms();
+#endif
         // Debug-only wrappers (DKG_TRACE_FUNCS); installed last so they wrap the
         // bindings above as well.
         dkg::debug::installTraceHooks(runtime);

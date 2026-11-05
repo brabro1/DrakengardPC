@@ -1,4 +1,5 @@
 #if defined(PS2X_HAVE_PARALLEL_GS)
+#include "runtime/vu_aot.h"
 #include "runtime/gs/gs_parallel_backend.h"
 #endif
 #include "ps2_runtime.h"
@@ -2515,7 +2516,10 @@ void PS2Runtime::run()
                                               << " dma=" << m_memory.dmaStartCount()
                                               << " wall%: iop=" << static_cast<int>((iop - lastIop) / span)
                                               << " vu1=" << static_cast<int>((vu1 - lastVu1) / span)
-                                              << " gif=" << static_cast<int>((gif - lastGif) / span) << std::endl);
+                                              << " gif=" << static_cast<int>((gif - lastGif) / span)
+                                              << " vu-interp(k pairs): vu0=" << vuaot::g_interpretedPairs[0].exchange(0) / 1000
+                                              << " vu1=" << vuaot::g_interpretedPairs[1].exchange(0) / 1000
+                                              << " vu1-aot(k cyc)=" << vuaot::g_compiledCycles.exchange(0) / 1000 << std::endl);
             lastTsc = nowTsc;
             lastTime = nowTime;
             lastVsync = vsyncNow;

@@ -417,6 +417,7 @@ void PS2Memory::processVIF0Data(const uint8_t *data, uint32_t sizeBytes)
                 {
                     std::memcpy(m_vu0Code + destAddr, data + pos, copyBytes);
                     markVU0CodeModified();
+                    vuaot::onVu0Upload(destAddr, data + pos, copyBytes);
                 }
             }
 

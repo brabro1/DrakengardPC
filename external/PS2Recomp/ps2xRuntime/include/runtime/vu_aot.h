@@ -13,6 +13,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <atomic>
 #include <cstring>
 #include <limits>
 
@@ -309,5 +310,12 @@ namespace vuaot
     void onVu1Upload(uint32_t destBytes, const uint8_t *data, uint32_t bytes);
     // Compiled program covering pc in VU1 micro memory, or nullptr.
     ProgramFn lookupVu1(uint32_t pc);
+    // Same for VU0 micro memory (VIF0 MPG uploads; VU0 runs via VCALLMS/VIF0 MSCAL).
+    void onVu0Upload(uint32_t destBytes, const uint8_t *data, uint32_t bytes);
+    ProgramFn lookupVu0(uint32_t pc);
     bool enabled();
+
+    // Pairs executed by the interpreter instead of compiled code ([0]=VU0, [1]=VU1).
+    inline std::atomic<uint64_t> g_interpretedPairs[2]{};
+    inline std::atomic<uint64_t> g_compiledCycles{0};
 }

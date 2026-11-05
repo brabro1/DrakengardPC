@@ -1,5 +1,6 @@
 #include "runtime/vu_aot.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <vector>
@@ -59,8 +60,10 @@ namespace vuaot
             ProgramFn fn = nullptr;
             int32_t program = -1;
         };
-        Owner g_vu1Map[kVu1Pairs];
-        uint64_t g_matched = 0, g_unmatched = 0;
+        Owner g_maps[2][kVu1Pairs];
+        uint64_t g_matched = 0, g_unmatched[2] = {0, 0};
+
+        void onUpload(uint32_t unit, uint32_t destBytes, const uint8_t *data, uint32_t bytes);
     }
 
     void registerPrograms(const Program *list, uint32_t count)
@@ -83,8 +86,15 @@ namespace vuaot
         return on;
     }
 
-    void onVu1Upload(uint32_t destBytes, const uint8_t *data, uint32_t bytes)
+    void onVu1Upload(uint32_t destBytes, const uint8_t *data, uint32_t bytes) { onUpload(1u, destBytes, data, bytes); }
+    void onVu0Upload(uint32_t destBytes, const uint8_t *data, uint32_t bytes) { onUpload(0u, destBytes, data, bytes); }
+
+    namespace
     {
+    void onUpload(uint32_t unit, uint32_t destBytes, const uint8_t *data, uint32_t bytes)
+    {
+        const uint32_t pairsInMemory = unit == 1u ? kVu1Pairs : kVu1Pairs / 4u;
+        Owner *map = g_maps[unit];
         if (programs().empty() || bytes == 0u)
             return;
         const uint64_t hash = fnv1a(data, bytes);
@@ -104,30 +114,52 @@ namespace vuaot
         // reach the new code through stale labels).
         for (uint32_t i = 0; i < count; ++i)
         {
-            const int32_t old = g_vu1Map[(first + i) % kVu1Pairs].program;
+            const int32_t old = map[(first + i) % pairsInMemory].program;
             if (old >= 0 && old != match)
             {
                 const Program &p = all[static_cast<size_t>(old)];
                 for (uint32_t j = 0; j < p.bytes / 8u; ++j)
                 {
-                    Owner &o = g_vu1Map[(p.base / 8u + j) % kVu1Pairs];
+                    Owner &o = map[(p.base / 8u + j) % pairsInMemory];
                     if (o.program == old)
                         o = Owner{};
                 }
             }
         }
         for (uint32_t i = 0; i < count; ++i)
-            g_vu1Map[(first + i) % kVu1Pairs] =
+            map[(first + i) % pairsInMemory] =
                 match >= 0 ? Owner{all[static_cast<size_t>(match)].fn, match} : Owner{};
+        // Diagnostic: PS2X_VU_UPLOAD_DUMP=<dir> saves each distinct unmatched payload (game data).
+        static const char *s_dumpDir = std::getenv("PS2X_VU_UPLOAD_DUMP");
+        if (match < 0 && s_dumpDir && *s_dumpDir)
+        {
+            char name[600];
+            std::snprintf(name, sizeof(name), "%s/vu%u_%04x_%u_%016llx.bin", s_dumpDir, unit, destBytes, bytes,
+                          static_cast<unsigned long long>(hash));
+            if (FILE *existing = std::fopen(name, "rb"))
+                std::fclose(existing);
+            else if (FILE *f = std::fopen(name, "wb"))
+            {
+                std::fwrite(data, 1, bytes, f);
+                std::fclose(f);
+            }
+        }
         if (match >= 0)
             ++g_matched;
-        else if (++g_unmatched <= 8u)
-            std::cerr << "[vu:aot] MPG to 0x" << std::hex << destBytes << " (" << std::dec << bytes
+        else if (++g_unmatched[unit] <= 8u)
+            std::cerr << "[vu:aot] VU" << unit << " MPG to 0x" << std::hex << destBytes << " (" << std::dec << bytes
                       << " bytes) has no compiled program; it will be interpreted" << std::endl;
+    }
+
     }
 
     ProgramFn lookupVu1(uint32_t pc)
     {
-        return g_vu1Map[(pc / 8u) % kVu1Pairs].fn;
+        return g_maps[1][(pc / 8u) % kVu1Pairs].fn;
+    }
+
+    ProgramFn lookupVu0(uint32_t pc)
+    {
+        return g_maps[0][(pc / 8u) % (kVu1Pairs / 4u)].fn;
     }
 }

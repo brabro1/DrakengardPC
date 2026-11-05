@@ -115,6 +115,7 @@ def main() -> int:
         shutil.rmtree(gen_new)
     run([recomp, "drakengard.toml"], log=os.path.join(rec_dir, "recomp.log"), cwd=rec_dir)
     sync_generated(gen_new, gen)
+    run(py + [os.path.join(HERE, "vu_recomp.py"), elf, os.path.join(rec_dir, "vu1")])
     with open(os.path.join(rec_dir, "recomp.log")) as f:
         tail = f.read().split("========== PS2Recomp report ==========")[-1]
     print(tail.strip())

@@ -2,8 +2,8 @@
 
 Usage: python -I tools/vu_recomp.py <SLUS_207.32> <output dir>
 
-Every VU1 microprogram Drakengard runs is uploaded with VIF MPG commands that sit inline in the
-ELF's .vudata section. This tool extracts each MPG payload (load address + code) and translates
+Every VU microprogram Drakengard runs is uploaded with VIF MPG commands that sit inline in the
+ELF: VU1 programs in .vudata, VU0 programs in .vutext. This tool extracts each MPG payload (load address + code) and translates
 it into one C++ function against runtime/vu_aot.h. At run time the VIF1 MPG handler matches
 uploads to these programs by address and FNV-1a hash, and VU1Interpreter::run calls the
 compiled code instead of interpreting it (unknown code is still interpreted).
@@ -820,20 +820,22 @@ dispatch:
 def extract_mpg(elf_path):
     e = Elf(elf_path)
     data = open(elf_path, "rb").read()
-    vd = e.section(".vudata")
-    buf = data[vd.offset:vd.offset + vd.size]
     found = {}
-    for i in range(0, len(buf) - 4, 4):
-        w = struct.unpack_from("<I", buf, i)[0]
-        if (w >> 24) & 0x7F != 0x4A:
-            continue
-        num = (w >> 16) & 0xFF or 256
-        base = (w & 0xFFFF) * 8
-        payload = buf[i + 4:i + 4 + num * 8]
-        if len(payload) != num * 8 or base + num * 8 > 0x4000:
-            continue
-        key = (base, fnv1a(payload))
-        found.setdefault(key, (base, payload, vd.addr + i))
+    # VIF packets with inline MPG: .vudata holds the VU1 programs, .vutext the VU0 ones.
+    for section in (".vudata", ".vutext"):
+        sec = e.section(section)
+        buf = data[sec.offset:sec.offset + sec.size]
+        for i in range(0, len(buf) - 4, 4):
+            w = struct.unpack_from("<I", buf, i)[0]
+            if (w >> 24) & 0x7F != 0x4A:
+                continue
+            num = (w >> 16) & 0xFF or 256
+            base = (w & 0xFFFF) * 8
+            payload = buf[i + 4:i + 4 + num * 8]
+            if len(payload) != num * 8 or base + num * 8 > 0x4000:
+                continue
+            key = (base, fnv1a(payload))
+            found.setdefault(key, (base, payload, sec.addr + i))
     return list(found.values())
 
 

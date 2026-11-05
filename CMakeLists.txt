@@ -89,6 +89,19 @@ if(NOT MSVC)
     target_compile_options(drakengard_generated PRIVATE -O2 -msse4.1 -Wno-unused-label -Wno-unused-variable)
 endif()
 
+# Ahead-of-time compiled VU1 microprograms (tools/vu_recomp.py, game-derived, in work/).
+set(DRAKENGARD_VU1_DIR "${CMAKE_SOURCE_DIR}/work/recomp/vu1")
+file(GLOB DRAKENGARD_VU1_SOURCES CONFIGURE_DEPENDS "${DRAKENGARD_VU1_DIR}/*.cpp")
+if(DRAKENGARD_VU1_SOURCES)
+    add_library(drakengard_vu1 STATIC ${DRAKENGARD_VU1_SOURCES})
+    target_link_libraries(drakengard_vu1 PUBLIC ps2_runtime)
+    if(NOT MSVC)
+        # Values must match the interpreter: no FMA contraction, no fast-math.
+        target_compile_options(drakengard_vu1 PRIVATE -O2 -msse4.1 -ffp-contract=off
+            -Wno-unused-label -Wno-unused-variable -Wno-unused-but-set-variable)
+    endif()
+endif()
+
 add_executable(DrakengardPC
     src/main.cpp
     src/disc/iso9660.cpp
@@ -99,6 +112,10 @@ add_executable(DrakengardPC
 )
 target_include_directories(DrakengardPC PRIVATE src)
 target_link_libraries(DrakengardPC PRIVATE drakengard_generated ps2_runtime)
+if(DRAKENGARD_VU1_SOURCES)
+    target_link_libraries(DrakengardPC PRIVATE drakengard_vu1)
+    target_compile_definitions(DrakengardPC PRIVATE DRAKENGARD_HAVE_VU1_AOT=1)
+endif()
 if(NOT MSVC)
     target_compile_options(DrakengardPC PRIVATE -msse4.1)
 endif()

@@ -310,6 +310,17 @@ public:
     // EE timers advance from the scheduler's emulated EE-cycle clock. The
     // returned mask uses bits 0..3 for newly raised TIM0..TIM3 interrupts.
     uint32_t advanceEeTimers(uint64_t eeCycles) noexcept;
+    // Cheap per-checkpoint entry: accumulates cycles and advances the timers only when the
+    // next timer event can be due (or a timer/GIF_STAT register is accessed). Returns the
+    // timer interrupt mask exactly like advanceEeTimers.
+    uint32_t accrueEeTimers(uint64_t eeCycles) noexcept
+    {
+        m_timerDebt += eeCycles;
+        if (m_timerDebt < m_timerBatch && m_deferredTimerIrq == 0u)
+            return 0u;
+        return settleEeTimers();
+    }
+    uint32_t settleEeTimers() noexcept;
     [[nodiscard]] uint64_t cyclesUntilNextEeTimerInterrupt() const noexcept;
     void resetEeTimers() noexcept;
 
@@ -449,6 +460,9 @@ public:
     };
 
     std::array<EeTimer, 4> m_eeTimers{};
+    uint64_t m_timerDebt = 0;
+    uint64_t m_timerBatch = 0;
+    uint32_t m_deferredTimerIrq = 0;
     bool tryProcessScratchpadDma(uint32_t channelBase, uint32_t chcr);
     uint8_t *resolveDmaMemory(uint32_t address, uint32_t bytes);
     void completeDmacChannel(uint32_t channelBase, uint32_t cause);

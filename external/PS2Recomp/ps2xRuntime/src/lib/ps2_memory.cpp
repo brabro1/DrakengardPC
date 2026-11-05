@@ -403,6 +403,9 @@ bool PS2Memory::initialize(size_t ramSize)
 void PS2Memory::resetEeTimers() noexcept
 {
     m_eeTimers = {};
+    m_timerDebt = 0u;
+    m_timerBatch = 0u;
+    m_deferredTimerIrq = 0u;
 }
 
 uint32_t PS2Memory::advanceEeTimers(uint64_t eeCycles) noexcept
@@ -481,6 +484,17 @@ uint32_t PS2Memory::advanceEeTimers(uint64_t eeCycles) noexcept
     return interruptMask;
 }
 
+uint32_t PS2Memory::settleEeTimers() noexcept
+{
+    const uint64_t debt = m_timerDebt;
+    m_timerDebt = 0u;
+    uint32_t irq = debt != 0u ? advanceEeTimers(debt) : 0u;
+    irq |= m_deferredTimerIrq;
+    m_deferredTimerIrq = 0u;
+    m_timerBatch = std::min<uint64_t>(cyclesUntilNextEeTimerInterrupt(), 4096u);
+    return irq;
+}
+
 uint64_t PS2Memory::cyclesUntilNextEeTimerInterrupt() const noexcept
 {
     uint64_t nearest = std::numeric_limits<uint64_t>::max();
@@ -520,7 +534,9 @@ uint64_t PS2Memory::cyclesUntilNextEeTimerInterrupt() const noexcept
         const uint64_t cycles = (numerator + clockHz - 1u) / clockHz;
         nearest = std::min(nearest, std::max<uint64_t>(1u, cycles));
     }
-    return nearest;
+    if (nearest == std::numeric_limits<uint64_t>::max())
+        return nearest;
+    return nearest > m_timerDebt ? nearest - m_timerDebt : 1u;
 }
 
 bool PS2Memory::isScratchpad(uint32_t address) const
@@ -1129,6 +1145,8 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
     uint32_t timerOffset = 0u;
     if (decodeEeTimerRegister(address, timerIndex, timerOffset))
     {
+        m_deferredTimerIrq |= settleEeTimers();
+        m_timerBatch = 0u; // mode/count/compare may change the next event
         EeTimer &timer = m_eeTimers[timerIndex];
         switch (timerOffset)
         {
@@ -2387,6 +2405,7 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
     uint32_t timerOffset = 0u;
     if (decodeEeTimerRegister(address, timerIndex, timerOffset))
     {
+        m_deferredTimerIrq |= settleEeTimers();
         const EeTimer &timer = m_eeTimers[timerIndex];
         switch (timerOffset)
         {
@@ -2444,6 +2463,7 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
 
     if (address == 0x10003020u) // GIF_STAT
     {
+        m_deferredTimerIrq |= settleEeTimers();
         uint32_t stat = m_ioRegisters.count(address) ? m_ioRegisters[address] : 0u;
         const uint32_t mode = m_ioRegisters.count(0x10003010u) ? m_ioRegisters[0x10003010u] : 0u;
         const uint32_t ctrl = m_ioRegisters.count(0x10003000u) ? m_ioRegisters[0x10003000u] : 0u;
