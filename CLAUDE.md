@@ -42,6 +42,16 @@ rebuilds everything — prefer new headers or `.cpp` changes in the runtime.
 - Mission script (reaches the objective map/hint, first mission ~300 s):
   `1300:start:10,1600:cross:10,1800:left:10,1950:cross:10,2400:cross:10,2700:cross:10,3000:cross:10,3300:start:10`.
 - k1gs/Drakengard1Recompile (PAL, MIT) is a useful cross-check for runtime bugs; see RESEARCH.md.
+- Rendering diagnostics (all off unless set):
+  `PS2X_GS_DRAW_LOG=<firstTick>:<lastTick>:<file>` logs every GS primitive (registers, vertices,
+  pixel-pipeline counters) and ADC-skipped primitives; `PS2X_GS_PROBE=x,y` follows one pixel.
+  `PS2X_VU_CLIP_TRACE=<file>[:<perSite>]` logs VU CLIP and FCEQ/FCAND/FCOR;
+  `PS2X_VU_DUMP=<pcHex>:<dir>` dumps VU1 code/data/registers at the first CLIP at that pc
+  (read with `python -I tools/vu_disasm.py <dir>/vu1_code.bin [start end]`);
+  `PS2X_VIF_WATCH=<qword>` logs UNPACKs that write that VU qword; `PS2X_VU1_DEBUG_NO_CLIP=1`
+  makes VU1 CLIP report "inside" (A/B test).
+- Native stubs replace guest functions by name: any library helper with a non-C register
+  convention must stay guest code (see `tools/make_recomp_config.py`, `_sceVu0ecossin`).
 - PCSX2 2.7 at `D:\ps2\pcsx2-v2.7.346-windows-x64-Qt` is the behavioural reference.
 - `[run:sample]` (every 300 host frames) gives pc/ra/VSync tick in any build.
 - `DKG_TRACE_FUNCS=0x2f11e4,... DKG_TRACE_MEM=0x5089c0,... DKG_TRACE_SKIP=N DKG_TRACE_LIMIT=N`

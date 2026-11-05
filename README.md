@@ -21,10 +21,9 @@ What is verified on the reference machine (see [PROGRESS.md](PROGRESS.md)):
   frame/task loop, shows the Square Enix, Cavia and Project Dragonsphere logos, and reaches
   the **title screen**. Controller input works (the game switches the virtual DualShock 2
   to analog + pressure mode). New Game plays the prologue, "Chapter 1 — Beginnings" and the
-  mission briefing, loads, and plays the first mission's intro (HUD, radio message,
-  objective map).
-- **Not yet**: a correct 3D scene in the mission (the ground is drawn as a flat grey area
-  and Caim is not visible), playable speed (~2 VSync/s in the mission: interpreted VU1 and a
+  mission briefing, loads, and renders the first mission (terrain, Caim, HUD, radio
+  message, objective map).
+- **Not yet**: verified gameplay (movement/combat), playable speed (~2 VSync/s in the mission: interpreted VU1 and a
   single-threaded software GS), audio, movies, saves. There is no playable gameplay. See [PROGRESS.md](PROGRESS.md) for the blockers.
 
 ## Requirements

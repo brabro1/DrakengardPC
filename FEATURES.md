@@ -20,7 +20,7 @@ Tested setup: Windows 11 Pro 26300, i5-12400F, RTX 3060, Drakengard (USA) SLUS-2
 | Title screen | verified | reached at VSync tick ~1093 (≈110 s host time) |
 | Main menu and New Game difficulty prompt | verified | via scripted input |
 | Starting a new game | verified | prologue text, "Chapter 1 — Beginnings", mission briefing (session 3) |
-| First mission (ground combat) | implemented, not verifiable yet | intro, HUD and objective map render at ~2 VSync/s; ground and Caim not drawn correctly yet |
+| First mission (ground combat) | implemented, not verifiable yet | terrain, Caim, HUD and objective map render at ~2 VSync/s; combat not yet verified |
 | Ground combat, dragon flight, story, endings | planned | |
 | Audio (EzSound on IOP → host audio) | planned | driver runs on IOP; no output path |
 | FMV playback (IPU MPEG-2) | planned | FFmpeg linked; untested |
@@ -88,3 +88,4 @@ Tested setup: Windows 11 Pro 26300, i5-12400F, RTX 3060, Drakengard (USA) SLUS-2
 | Position samples without call tracing | verified | `[run:sample]` every 300 host frames, with VSync/s and IOP/VU1/GS wall-time shares |
 | Sampling profiler | verified | `DKG_PROFILE` + `tools/profile_report.py` |
 | Automated boot regression | verified | `tools/boot_test.py` (boot, title, progress, stall checks) |
+| GS draw log, pixel probe, VU clip trace/dump, VIF watch | verified | env switches in CLAUDE.md; `tools/vu_disasm.py` |

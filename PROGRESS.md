@@ -7,7 +7,7 @@
 | A — Inspection and feasibility | **done** | RESEARCH.md: build identity, disc inventory, ELF layout, ISA census, tool audit, architecture choice |
 | B — Native execution foundation | **done** | 8,315 functions translated (0 decode failures); `DrakengardPC.exe` executes original game code through IOP init, disc search and interrupt setup into the frame loop (logs below) |
 | C — Boot and title screen | **reached, with known issues** | Square Enix → Cavia → Project Dragonsphere logos → title "PRESS START BUTTON"; scripted input opens the main menu and the New Game difficulty prompt (session 2). Known issues: game runs at ~38% speed, no audio (interlaced presentation fixed in session 4) |
-| D — Playable vertical slice | in progress | New Game → prologue → Chapter 1 → briefing → first mission intro (HUD, radio message, objective map, hint) at ~2 VSync/s; 3D ground renders as a flat grey area and Caim is not visible yet |
+| D — Playable vertical slice | in progress | New Game → prologue → Chapter 1 → briefing → first mission: terrain, castle skyline and Caim render with HUD, radio message, objective map and hint at ~2 VSync/s; gameplay input not yet verified |
 | E — Compatibility and timing | not started | timing architecture sketched in ARCHITECTURE.md |
 | F — Modern rendering and mods | not started | |
 | G — Complete-game verification | not started | |
@@ -210,10 +210,43 @@ script pressed it while the objective map and hint were up.
 
 Tests: PS2Recomp `ps2x_tests` 455/455 (7 new); pipeline tests 6/6.
 
+**3D scene diagnosed and fixed: `_sceVu0ecossin` was still a native stub.** Chain of evidence
+(runs 50–59, new diagnostics listed in CLAUDE.md):
+
+1. GS draw log (`PS2X_GS_DRAW_LOG`, `PS2X_GS_PROBE`): the 3D scene renders into a 640×480
+   buffer (FBP 80, Z at 230) that 20 sprites copy into the 224-line field. A probe pixel in the
+   grey area only ever received the frame clear; ~9,060 primitives per frame, but rows 260–420
+   of the scene buffer got almost none. The grey was the clear colour, not a bad draw.
+2. ADC-skipped primitives (logged by the frontend hook): 5,996 per frame, mostly off-screen
+   guard-band rejects, plus large near-ground triangles.
+3. A/B switch `PS2X_VU1_DEBUG_NO_CLIP=1`: the ground (road, trees) appears, so the geometry
+   reaches VU1 and its clip test rejects it.
+4. VU clip trace + VU1 dump + `tools/vu_disasm.py`: the ground program (VU1 `0x0AC0`) transforms
+   vertices by vf19–vf22 loaded from VU qwords 959–962, then clips at `0x0B38`. The matrix held
+   (1,0,1,0)/(0,0,1,0)/…; transformed vertices had w = 0, so every vertex was "outside".
+5. `PS2X_VIF_WATCH=959`: the matrix is uploaded by `UNPACK V4-32 num 4 addr 959`, and most
+   uploads carried 1e26–1e29 values. The EE packet builder `sub_00251DEC` copies it from
+   `func_264344(0x480B00)` (camera object, inferred), which builds it with
+   `sceVu0RotMatrixX` (`0x2FCB30`).
+6. `sceVu0RotMatrixX/Y/Z` became guest code in session 3, but they call libvu0's internal
+   `_sceVu0ecossin` (`0x2FC9C8`, angle in vf6.x, cos/sin returned in vf4.xy, vf5 zeroed), which stayed a
+   native C-ABI stub: it read `f12`, wrote {cos, sin} to memory at `a0` (the caller's matrix)
+   and left vf4/vf5 stale.
+
+Fix: the config generator keeps `_sceVu0*` as guest code too (42 functions); a pipeline test
+asserts no libvu0 function is a native stub. Result (run 59): the ground, hills and Caim with
+his sword render in the first mission. Also fixed: macro-mode `VCLIPw` put −x in bit 0 and
+compared against signed w (hardware: +x bit 0, limit |w|).
+
+Run 60 (after the VCLIP fix, 1,500 s, pad script past the hint): the scene stays correct; while
+d-pad up is held the view pitches up to the cloud sky and castle skyline and Caim's pose
+changes, and ✕/□ presses are delivered. Frames every 30 ticks do not establish walking or an
+attack animation. `boot_test.py` 4/4; `ps2x_tests` 455/455; pipeline tests 7/7.
+
 ## Main blockers
 
-1. **3D scene correctness**: in the first mission the ground is a flat grey area and Caim is
-   not drawn (not fog; see session 4). Blocks verifying gameplay.
+1. **Gameplay not yet verified**: locomotion and attacks are not confirmed (d-pad input moves
+   the view; analog-stick scripting is not available yet).
 2. **Speed**: the first mission runs at ~2 VSync/s (VU1 interpreter ~70%, software GS ~40%
    of the guest thread); the title ~16-20 VSync/s. Needs faster VU1 (ahead-of-time translation
    of the fixed microprogram set), the GS off the guest thread, then the hardware renderer.
@@ -223,9 +256,10 @@ Tests: PS2Recomp `ps2x_tests` 455/455 (7 new); pipeline tests 6/6.
 
 ## Next actions
 
-1. Diagnose the grey ground / missing Caim: dump one mission frame's GS draws (PRIM, TEX0,
-   TEST, ZBUF, vertex ranges) and compare against PCSX2's GS dump of the same scene.
-2. Extend the pad script past the hint (✕) and drive movement/attack to reach control.
+1. Audit the remaining 223 native stubs for register-convention or semantic mismatches like
+   `_sceVu0ecossin` (libm internals `__kernel_sinf/cosf`, `__ieee754_rem_pio2f` are host
+   approximations).
+2. Drive movement/attack past the intro with the pad script and verify combat.
 3. Profile VU1 in the mission; plan ahead-of-time translation of its microprograms, then the
    asynchronous GS (queue GIF packets; sync on FINISH/SIGNAL, readback, presentation).
 4. Resynchronise VBlank deadlines after stalls.

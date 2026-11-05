@@ -30,6 +30,8 @@ Addresses, function maps and overrides are specific to the supported ELF.
 | 2026-11-03 | First mission load after `cvt.w.s` fix | partial — loads, scene fades in with VU1 rendering; ~0.2 VSync/s | session 3, run 47 |
 | 2026-11-05 | First mission intro after session-4 runtime fixes | partial — HUD, radio message, objective map and hint render; ~2 VSync/s; ground drawn as flat grey, Caim not visible | session 4, runs 48–49 |
 | 2026-11-05 | Interlaced presentation (SMODE2 INT+FFMD) | pass — single 448-line image | session 4, run 48 |
+| 2026-11-05 | First mission 3D scene after `_sceVu0ecossin` fix | pass (visual) — ground, hills, castle skyline, Caim with sword | session 4, runs 59–60 |
+| 2026-11-05 | Scripted d-pad / ✕ / □ in the mission | partial — inputs delivered, view moves; walking/attack not confirmed | session 4, run 60 |
 
 ## Host
 

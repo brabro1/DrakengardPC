@@ -208,3 +208,21 @@ Combsort11 rule (gaps 9 and 10 become 11) and exit when gap < 2 and no swaps. PS
 translated `cvt.w.s` as `nearbyintf` (round to nearest): 2 / 1.3 = 1.54 → 2, so the gap
 never reached 1. The R5900 `cvt.w.s` truncates toward zero and saturates |x| ≥ 2³¹ by sign
 (PCSX2: `(x & 0x7F800000) <= 0x4E800000 ? (s32)x : sign ? 0x80000000 : 0x7FFFFFFF`).
+
+## First-mission 3D scene missing (Observed, session 4)
+
+- Scene rendering: 3D goes to a 640×480 CT32 buffer at FBP 80 with a Z16S buffer at ZBP 230
+  (ZTST GEQUAL, larger Z nearer); XYOFFSET (1728, 1808) puts the centre at (320, 240). Each frame
+  starts with 20 64-px-wide sprites copying the previous buffer (TBP 2560 = FBP 80) into the
+  224-line display field at FBP 0 (second pass blended with FIX 0x40). ~9,000 primitives/frame.
+- VU1 ground program (code at the time of run 57): vertices transformed by vf19–vf22 at
+  `0x0AA8–0x0AF0` (matrix rows loaded from VU qwords `vi1+0..3`, here 959–962), results stored
+  with `sqi`, reloaded with `lqi.xyz` and clipped at `0x0B38`/`0x0B80`; `fcor vi1, 0xFFFBEF` /
+  `fcand vi1, 0x410` / `fcand vi1, 0x400` pick reject / clip paths at `0x0BA0–0x0BC8`.
+- The VU1 constant block is built on the EE by `sub_00251DEC` (inferred name: VU1 header
+  builder): UNPACK V4-32 to VU qwords 0x384, 0x387, 0x3BF, 0x3C3…; the 0x3BF matrix comes
+  from `func_264344(0x480B00)`, which calls `sceVu0RotMatrixX` (`0x2FCB30`) on the camera
+  object at `0x480B00` (inferred) with the angle at `+0x294`.
+- libvu0 internal `_sceVu0ecossin` (`0x2FC9C8`): input angle in vf6.x (`qmtc2`), polynomial in
+  VU0 macro code with constants at `0x5149A0`, `vsqrt`, returns cos/sin in vf4.x/vf4.y (vf5 used
+  as scratch); caller flag in a3 selects the sign. Must not be replaced by a C-ABI stub.
