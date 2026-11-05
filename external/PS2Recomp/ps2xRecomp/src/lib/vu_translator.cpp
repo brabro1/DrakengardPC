@@ -8,6 +8,90 @@
 #include <sstream>
 #include <cmath>
 
+#include <stdexcept>
+
+namespace
+{
+    // FMAC upper instructions update the MAC and status flags (ADD/SUB/MUL/MADD/MSUB/OPMSUB
+    // and their bc/q/i/accumulator forms). ABS, MAX, MINI, FTOI, ITOF, MOVE, MR32 and CLIP do not.
+    bool isVu0FmacUpper(const ps2recomp::Instruction &inst)
+    {
+        using namespace ps2recomp;
+        const uint8_t special1 = static_cast<uint8_t>(inst.function & 0x3F);
+        if (special1 >= 0x3C)
+        {
+            const uint8_t f = static_cast<uint8_t>((((inst.raw >> 6) & 0x1F) << 2) | (inst.raw & 0x3));
+            switch (f)
+            {
+            case VU0_S2_VADDAx: case VU0_S2_VADDAy: case VU0_S2_VADDAz: case VU0_S2_VADDAw:
+            case VU0_S2_VSUBAx: case VU0_S2_VSUBAy: case VU0_S2_VSUBAz: case VU0_S2_VSUBAw:
+            case VU0_S2_VMADDAx: case VU0_S2_VMADDAy: case VU0_S2_VMADDAz: case VU0_S2_VMADDAw:
+            case VU0_S2_VMSUBAx: case VU0_S2_VMSUBAy: case VU0_S2_VMSUBAz: case VU0_S2_VMSUBAw:
+            case VU0_S2_VMULAx: case VU0_S2_VMULAy: case VU0_S2_VMULAz: case VU0_S2_VMULAw:
+            case VU0_S2_VADDA: case VU0_S2_VADDAq: case VU0_S2_VADDAi:
+            case VU0_S2_VSUBA: case VU0_S2_VSUBAq: case VU0_S2_VSUBAi:
+            case VU0_S2_VMADDA: case VU0_S2_VMADDAq: case VU0_S2_VMADDAi:
+            case VU0_S2_VMSUBA: case VU0_S2_VMSUBAq: case VU0_S2_VMSUBAi:
+            case VU0_S2_VMULA: case VU0_S2_VMULAq: case VU0_S2_VMULAi:
+            case VU0_S2_VOPMULA:
+                return true;
+            default:
+                return false;
+            }
+        }
+        switch (special1)
+        {
+        case VU0_S1_VADDx: case VU0_S1_VADDy: case VU0_S1_VADDz: case VU0_S1_VADDw:
+        case VU0_S1_VSUBx: case VU0_S1_VSUBy: case VU0_S1_VSUBz: case VU0_S1_VSUBw:
+        case VU0_S1_VMULx: case VU0_S1_VMULy: case VU0_S1_VMULz: case VU0_S1_VMULw:
+        case VU0_S1_VMADDx: case VU0_S1_VMADDy: case VU0_S1_VMADDz: case VU0_S1_VMADDw:
+        case VU0_S1_VMSUBx: case VU0_S1_VMSUBy: case VU0_S1_VMSUBz: case VU0_S1_VMSUBw:
+        case VU0_S1_VADD: case VU0_S1_VADDq: case VU0_S1_VADDi:
+        case VU0_S1_VSUB: case VU0_S1_VSUBq: case VU0_S1_VSUBi:
+        case VU0_S1_VMUL: case VU0_S1_VMULq: case VU0_S1_VMULi:
+        case VU0_S1_VMADD: case VU0_S1_VMADDq: case VU0_S1_VMADDi:
+        case VU0_S1_VMSUB: case VU0_S1_VMSUBq: case VU0_S1_VMSUBi:
+        case VU0_S1_VOPMSUB:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    // Every FMAC template computes `__m128 res` and ends with one blend into vf[fd] or ACC.
+    // Insert the flag update before that write-back; refuse unknown template shapes.
+    std::string insertVu0MacUpdate(const std::string &code, uint8_t destMask)
+    {
+        if (code.find("__m128 res = ") == std::string::npos)
+            throw std::runtime_error("VU0 FMAC template without a result value: " + code);
+        size_t pos = code.rfind(" ctx->vu0_vf[");
+        const size_t acc = code.rfind(" ctx->vu0_acc = ");
+        if (pos == std::string::npos || (acc != std::string::npos && acc > pos))
+            pos = acc;
+        if (pos == std::string::npos)
+            throw std::runtime_error("VU0 FMAC template without a write-back: " + code);
+        return code.substr(0, pos) + fmt::format(" PS2_VU0_SET_MAC(ctx, res, {}u);", destMask & 0xFu) + code.substr(pos);
+    }
+
+    // VF0 is the constant (0,0,0,1): hardware discards writes to it. Keep the right-hand
+    // side evaluated (it may read memory) but drop the store.
+    std::string discardVu0ZeroRegisterWrites(std::string code)
+    {
+        static const std::string target = "ctx->vu0_vf[0] = ";
+        size_t pos = 0;
+        while ((pos = code.find(target, pos)) != std::string::npos)
+        {
+            const size_t end = code.find(';', pos);
+            if (end == std::string::npos)
+                throw std::runtime_error("Unterminated VU0 VF0 assignment: " + code);
+            const std::string rhs = code.substr(pos + target.size(), end - pos - target.size());
+            const std::string replacement = "(void)(" + rhs + ")";
+            code.replace(pos, end - pos, replacement);
+            pos += replacement.size();
+        }
+        return code;
+    }
+}
 
 namespace ps2recomp
 {
@@ -17,6 +101,14 @@ namespace ps2recomp
     }
 
     std::string VuTranslator::translate(const Instruction &inst)
+    {
+        std::string code = translateRaw(inst);
+        if ((inst.rs & 0x10u) != 0u && isVu0FmacUpper(inst))
+            code = insertVu0MacUpdate(code, inst.vectorInfo.vectorField);
+        return discardVu0ZeroRegisterWrites(code);
+    }
+
+    std::string VuTranslator::translateRaw(const Instruction &inst)
     {
         uint8_t format = inst.rs; // Use parsed rs field for COP2 format
         uint8_t rt = inst.rt;

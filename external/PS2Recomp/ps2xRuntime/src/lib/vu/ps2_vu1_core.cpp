@@ -179,6 +179,10 @@ void VU1Interpreter::recordViWriteForBranch(uint8_t reg, int32_t oldValue)
 
 void VU1Interpreter::applyDest(float *dst, const float *result, uint8_t dest)
 {
+    // VF0 is hard-wired to (0,0,0,1). Discard the write here (flags were already updated by
+    // the caller) so the paired lower instruction never reads a transient value.
+    if (dst == m_state.vf[0])
+        return;
     if (dest & 0x8u)
         dst[0] = result[0];
     if (dest & 0x4u)

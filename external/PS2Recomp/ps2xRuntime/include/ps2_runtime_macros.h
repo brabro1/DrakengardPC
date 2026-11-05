@@ -377,6 +377,27 @@ inline __m128 ps2_vmul(__m128 a, __m128 b)
 #define PS2_VMULQ(a, q) _mm_mul_ps((__m128)(a), _mm_set1_ps(q))
 #define PS2_VBLEND(a, b, mask) PS2_BLENDV_PS((__m128)(a), (__m128)(b), (__m128)(mask))
 
+// VU0 macro-mode FMAC flags. dest is the instruction's field mask (x=8, y=4, z=2, w=1), the
+// same bit order as the MAC register: Z in bits 0-3, S in 4-7, U in 8-11, O in 12-15. Lanes
+// outside dest are cleared. Status keeps D/I and every sticky bit, sets current Z/S/U/O in
+// bits 0-3 and ORs them into the sticky bits 6-9. Results arrive already finished by
+// ps2_vfinish: exponent-0 results are flushed to signed zero (so underflow cannot be seen and
+// U stays clear) and exponent-255 values are PS2 large numbers (reported as overflow).
+template <class Ctx>
+inline void ps2_vu0_set_mac(Ctx *ctx, __m128 res, uint32_t dest)
+{
+    static constexpr uint8_t laneToMac[16] = {0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15};
+    const __m128i expMask = _mm_set1_epi32(0x7F800000);
+    const __m128i rexp = _mm_and_si128(_mm_castps_si128(res), expMask);
+    const uint32_t zero = laneToMac[_mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(rexp, _mm_setzero_si128())))] & dest;
+    const uint32_t sign = laneToMac[_mm_movemask_ps(res)] & dest;
+    const uint32_t over = laneToMac[_mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(rexp, expMask)))] & dest;
+    ctx->vu0_mac_flags = zero | (sign << 4) | (over << 12);
+    const uint32_t current = (zero ? 1u : 0u) | (sign ? 2u : 0u) | (over ? 8u : 0u);
+    ctx->vu0_status = static_cast<uint16_t>((ctx->vu0_status & 0xFF0u) | current | (current << 6));
+}
+#define PS2_VU0_SET_MAC(ctx, res, dest) ps2_vu0_set_mac((ctx), (__m128)(res), (dest))
+
 // Memory access helpers - Hybrid Fast/Slow Path
 // Fast path: Direct RDRAM access (masked).
 // Slow path: Full runtime->Load/Store

@@ -3,6 +3,7 @@
 #include "runtime/gs/gs_frontend.h"
 #include "ps2_log.h"
 #include <atomic>
+#include <iostream>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -1548,10 +1549,15 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                             m_pendingVif0Transfers.push_back(std::move(pt));
                         }
                     }
-                    // else if (channelBase == 0x10009000u)
-                    // {
-
-                    // }
+                    else
+                    {
+                        // A chain whose tags carry no payload still fetches its tags and ends
+                        // the transfer (PCSX2 Gif.cpp / Vif1_Dma.cpp): clear STR and raise the
+                        // channel interrupt now, since no pending transfer will do it later.
+                        m_ioRegisters[channelBase + 0x20] = 0u;
+                        const uint32_t cause = channelBase == 0x1000A000u ? 2u : (channelBase == 0x10009000u ? 1u : 0u);
+                        completeDmacChannel(channelBase, cause);
+                    }
                 }
                 else if (qwc > 0)
                 {
@@ -1584,6 +1590,49 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
     return false;
 }
 
+// Host pointer for a DMA memory-side address: EE RAM (any mirror) or the VU memories mapped at
+// 0x11000000 (VU0 code/data, VU1 code/data). Returns nullptr when [address, address+bytes) is
+// not inside one of them.
+uint8_t *PS2Memory::resolveDmaMemory(uint32_t address, uint32_t bytes)
+{
+    const uint32_t phys = address & 0x7FFFFFF0u;
+    struct VuWindow
+    {
+        uint32_t base;
+        uint8_t *memory;
+        uint32_t size;
+    };
+    const VuWindow windows[] = {
+        {0x11000000u, m_vu0Code, PS2_VU0_CODE_SIZE},
+        {0x11004000u, m_vu0Data, PS2_VU0_DATA_SIZE},
+        {0x11008000u, m_vu1Code, PS2_VU1_CODE_SIZE},
+        {0x1100C000u, m_vu1Data, PS2_VU1_DATA_SIZE},
+    };
+    for (const VuWindow &window : windows)
+    {
+        if (phys >= window.base && phys < window.base + window.size)
+        {
+            const uint32_t offset = phys - window.base;
+            if (!window.memory || bytes > window.size - offset)
+                return nullptr;
+            return window.memory + offset;
+        }
+    }
+
+    uint32_t offset = 0u;
+    try
+    {
+        offset = translateAddress(phys);
+    }
+    catch (const std::exception &)
+    {
+        return nullptr;
+    }
+    if (offset > PS2_RAM_SIZE || bytes > PS2_RAM_SIZE - offset)
+        return nullptr;
+    return m_rdram + offset;
+}
+
 bool PS2Memory::tryProcessScratchpadDma(uint32_t channelBase, uint32_t chcr)
 {
     static constexpr uint32_t kSprFromChannel = 0x1000D000u;
@@ -1591,56 +1640,110 @@ bool PS2Memory::tryProcessScratchpadDma(uint32_t channelBase, uint32_t chcr)
     if (channelBase != kSprFromChannel && channelBase != kSprToChannel)
         return false;
 
-    const uint32_t mode = (chcr >> 2u) & 0x3u;
-    if (mode != 0u)
-        return false;
-
-    const uint32_t qwc = m_ioRegisters[channelBase + 0x20u] & 0xFFFFu;
-    const uint32_t byteCount = qwc * 16u;
-    const uint32_t originalMadr = m_ioRegisters[channelBase + 0x10u] & 0x7FFFFFF0u;
-    const uint32_t originalSadr = m_ioRegisters[channelBase + 0x80u] & 0x3FF0u;
-
-    uint32_t mainOffset = 0u;
-    try
-    {
-        mainOffset = translateAddress(originalMadr);
-    }
-    catch (const std::exception &)
-    {
-        return false;
-    }
-
-    if (mainOffset > PS2_RAM_SIZE || byteCount > PS2_RAM_SIZE - mainOffset)
-        return false;
-
     const bool fromScratchpad = channelBase == kSprFromChannel;
-    uint32_t scratchOffset = originalSadr;
-    uint32_t bytesLeft = byteCount;
-    uint32_t copied = 0u;
-    while (bytesLeft != 0u)
+    const uint32_t mode = (chcr >> 2u) & 0x3u;
+    auto reportUnsupported = [&](const char *reason, uint32_t detail)
     {
-        const uint32_t scratchChunk = PS2_SCRATCHPAD_SIZE - scratchOffset;
-        const uint32_t chunk = std::min(bytesLeft, scratchChunk);
-        if (fromScratchpad)
+        static uint32_t reports = 0u;
+        if (reports < 16u)
         {
-            std::memcpy(m_rdram + mainOffset + copied, m_scratchpad + scratchOffset, chunk);
-            markModified(mainOffset + copied, chunk);
+            ++reports;
+            std::cerr << "[spr-dma:unsupported] " << reason << " chan=" << (fromScratchpad ? "fromSPR" : "toSPR")
+                      << " chcr=0x" << std::hex << chcr << " detail=0x" << detail
+                      << " madr=0x" << m_ioRegisters[channelBase + 0x10u]
+                      << " tadr=0x" << m_ioRegisters[channelBase + 0x30u] << std::dec << std::endl;
         }
-        else
-        {
-            std::memcpy(m_scratchpad + scratchOffset, m_rdram + mainOffset + copied, chunk);
-        }
+        return false;
+    };
 
-        copied += chunk;
-        bytesLeft -= chunk;
-        scratchOffset = (scratchOffset + chunk) & (PS2_SCRATCHPAD_SIZE - 1u);
+    // Copy quadwords between memory and the scratchpad; the scratchpad address wraps at 16 KB.
+    uint32_t sadr = m_ioRegisters[channelBase + 0x80u] & 0x3FF0u;
+    auto copyQuadwords = [&](uint8_t *memory, uint32_t qwc, bool memoryIsRam, uint32_t memoryOffset)
+    {
+        uint32_t copied = 0u;
+        uint32_t bytesLeft = qwc * 16u;
+        while (bytesLeft != 0u)
+        {
+            const uint32_t chunk = std::min(bytesLeft, PS2_SCRATCHPAD_SIZE - sadr);
+            if (fromScratchpad)
+            {
+                std::memcpy(memory + copied, m_scratchpad + sadr, chunk);
+                if (memoryIsRam)
+                    markModified(memoryOffset + copied, chunk);
+            }
+            else
+            {
+                std::memcpy(m_scratchpad + sadr, memory + copied, chunk);
+            }
+            copied += chunk;
+            bytesLeft -= chunk;
+            sadr = (sadr + chunk) & (PS2_SCRATCHPAD_SIZE - 1u);
+        }
+    };
+    auto isRam = [&](const uint8_t *p)
+    { return p >= m_rdram && p < m_rdram + PS2_RAM_SIZE; };
+
+    if (mode == 0u)
+    {
+        const uint32_t qwc = m_ioRegisters[channelBase + 0x20u] & 0xFFFFu;
+        const uint32_t madr = m_ioRegisters[channelBase + 0x10u] & 0x7FFFFFF0u;
+        uint8_t *memory = resolveDmaMemory(madr, qwc * 16u);
+        if (!memory)
+            return reportUnsupported("normal transfer outside RAM/VU memory", madr);
+        copyQuadwords(memory, qwc, isRam(memory), static_cast<uint32_t>(memory - m_rdram));
+        m_ioRegisters[channelBase + 0x10u] = (madr + qwc * 16u) & 0x7FFFFFF0u;
+        m_ioRegisters[channelBase + 0x20u] = 0u;
+        m_ioRegisters[channelBase + 0x80u] = sadr;
+        completeDmacChannel(channelBase, fromScratchpad ? 8u : 9u);
+        return true;
     }
 
-    m_ioRegisters[channelBase + 0x10u] = (originalMadr + byteCount) & 0x7FFFFFF0u;
-    m_ioRegisters[channelBase + 0x20u] = 0u;
-    m_ioRegisters[channelBase + 0x80u] = (originalSadr + byteCount) & 0x3FF0u;
-    completeDmacChannel(channelBase, fromScratchpad ? 8u : 9u);
-    return true;
+    if (mode != 1u || fromScratchpad)
+        return reportUnsupported("mode", mode);
+
+    // toSPR source chain (PCSX2 SPR.cpp / Dmac.h). The tag's upper half goes to CHCR; TTE also
+    // copies the tag quadword. CALL/RET/REFS tags are not used by toSPR and are refused.
+    uint32_t tadr = m_ioRegisters[channelBase + 0x30u] & 0x7FFFFFF0u;
+    uint32_t control = chcr;
+    for (uint32_t retired = 0u; retired < 65536u; ++retired)
+    {
+        const uint8_t *tagPtr = resolveDmaMemory(tadr, 16u);
+        if (!tagPtr || !isRam(tagPtr))
+            return reportUnsupported("chain tag outside RAM", tadr);
+        uint32_t tag0 = 0u, tag1 = 0u;
+        std::memcpy(&tag0, tagPtr, 4u);
+        std::memcpy(&tag1, tagPtr + 4u, 4u);
+        const uint32_t id = (tag0 >> 28) & 7u;
+        if (id == 4u || id == 5u || id == 6u)
+            return reportUnsupported("chain tag id", id);
+        const uint32_t qwc = tag0 & 0xFFFFu;
+        const bool inlinePayload = id == 1u || id == 2u || id == 7u;
+        const uint32_t source = inlinePayload ? tadr + 16u : (tag1 & 0x7FFFFFF0u);
+        const uint32_t next = id == 2u ? (tag1 & 0x7FFFFFF0u)
+                              : id == 1u ? source + qwc * 16u
+                              : id == 7u ? tadr
+                                         : tadr + 16u;
+        uint8_t *payload = resolveDmaMemory(source, qwc * 16u);
+        if (!payload)
+            return reportUnsupported("chain payload outside RAM/VU memory", source);
+
+        control = (control & 0xFFFFu) | (tag0 & 0xFFFF0000u);
+        if ((control & 0x40u) != 0u)
+            copyQuadwords(const_cast<uint8_t *>(tagPtr), 1u, true, 0u);
+        copyQuadwords(payload, qwc, isRam(payload), 0u);
+        m_ioRegisters[channelBase + 0x10u] = (source + qwc * 16u) & 0x7FFFFFF0u;
+        m_ioRegisters[channelBase + 0x20u] = 0u;
+        m_ioRegisters[channelBase + 0x30u] = next;
+        tadr = next;
+        if (id == 0u || id == 7u || ((control & 0x80u) != 0u && (tag0 & 0x80000000u) != 0u))
+        {
+            m_ioRegisters[channelBase] = control;
+            m_ioRegisters[channelBase + 0x80u] = sadr;
+            completeDmacChannel(channelBase, 9u);
+            return true;
+        }
+    }
+    return reportUnsupported("chain longer than 65536 tags", tadr);
 }
 
 void PS2Memory::completeDmacChannel(uint32_t channelBase, uint32_t cause)

@@ -9,7 +9,9 @@
 #include <atomic>
 #include <algorithm>
 #include <cmath>
+#include <emmintrin.h>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -292,26 +294,7 @@ namespace
         return psm == GS_PSM_T8 || psm == GS_PSM_T8H;
     }
 
-    // std::lround semantics (half away from zero) without the out-of-line CRT call,
-    // which cost ~9% of the guest thread in bilinear sampling. x - trunc(x) is exact
-    // in float for every finite x, so the result is identical to lroundf.
-    inline int roundHalfAwayFromZero(float x)
-    {
-        const float whole = std::trunc(x);
-        const float fraction = x - whole;
-        if (fraction >= 0.5f)
-            return static_cast<int>(whole) + 1;
-        if (fraction <= -0.5f)
-            return static_cast<int>(whole) - 1;
-        return static_cast<int>(whole);
-    }
 
-    uint8_t lerpChannel(uint8_t c00, uint8_t c10, uint8_t c01, uint8_t c11, float fx, float fy)
-    {
-        const float top = static_cast<float>(c00) + (static_cast<float>(c10) - static_cast<float>(c00)) * fx;
-        const float bottom = static_cast<float>(c01) + (static_cast<float>(c11) - static_cast<float>(c01)) * fx;
-        return clampU8(roundHalfAwayFromZero(top + (bottom - top) * fy));
-    }
 }
 
 namespace
@@ -421,6 +404,27 @@ namespace
             std::memcpy(pixels.data() + y * kHostFrameWidth * 4u,
                         source.data() + sourceY * kHostFrameWidth * 4u,
                         width * 4u);
+        }
+    }
+
+    // SMODE2 INT+FFMD: the framebuffer holds one field, so the display reads half as many
+    // framebuffer lines (odd heights round up, PCSX2 GSPCRTCRegs::SetRects) and each line
+    // covers two display lines.
+    bool isFieldFramebuffer(uint64_t smode2)
+    {
+        return (smode2 & 0x3ull) == 0x3ull;
+    }
+
+    void expandFieldScanout(std::vector<uint8_t> &pixels, uint32_t height)
+    {
+        const size_t stride = kHostFrameWidth * 4u;
+        if (pixels.size() < stride * height)
+            return;
+        for (uint32_t y = height; y-- > 0u;)
+        {
+            const uint32_t source = y / 2u;
+            if (source != y)
+                std::memcpy(pixels.data() + y * stride, pixels.data() + source * stride, stride);
         }
     }
 
@@ -866,7 +870,16 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
     if (x < ctx.scissor.x0 || x > ctx.scissor.x1 || y < ctx.scissor.y0 || y > ctx.scissor.y1)
         return;
 
-    if (state.prim.fge)
+    // Diagnostic: PS2X_GS_DEBUG_NOFOG=1 ignores PRIM.FGE (isolates fog-coefficient problems).
+    static const bool s_debugNoFog = []
+    {
+        const char *value = std::getenv("PS2X_GS_DEBUG_NOFOG");
+        const bool enabled = value && value[0] == '1';
+        if (enabled)
+            std::cerr << "[gs:debug] fog disabled by PS2X_GS_DEBUG_NOFOG" << std::endl;
+        return enabled;
+    }();
+    if (state.prim.fge && !s_debugNoFog)
     {
         const uint32_t inverseFog = 255u - fog;
         auto applyFog = [&](uint8_t input, uint8_t fogColor) -> uint8_t
@@ -1121,6 +1134,13 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
         case GS_PSM_T4:
         case GS_PSM_T4HL:
         case GS_PSM_T4HH:
+            // Common T8 + CT32 + CSA 0 case: the CLUT index is the texel (both CSM modes) and
+            // TEXA does not apply to CT32, so read the two CLUT halves directly.
+            if (tex.psm == GS_PSM_T8 && tex.cpsm == GS_PSM_CT32 && tex.csa == 0u)
+            {
+                const uint32_t index = static_cast<u8>(out);
+                return static_cast<uint32_t>(m_clut[index]) | (static_cast<uint32_t>(m_clut[index + 256u]) << 16u);
+            }
             return LookupCLUT(state, static_cast<u8>(out), tex.cpsm, tex.csm, tex.csa, tex.psm);
         }
 
@@ -1146,31 +1166,23 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
     const uint32_t c01 = samplePoint(u0, v1);
     const uint32_t c11 = samplePoint(u1, v1);
 
-    const uint8_t r = lerpChannel(static_cast<uint8_t>(c00 & 0xFFu),
-                                  static_cast<uint8_t>(c10 & 0xFFu),
-                                  static_cast<uint8_t>(c01 & 0xFFu),
-                                  static_cast<uint8_t>(c11 & 0xFFu),
-                                  fx, fy);
-    const uint8_t g = lerpChannel(static_cast<uint8_t>((c00 >> 8) & 0xFFu),
-                                  static_cast<uint8_t>((c10 >> 8) & 0xFFu),
-                                  static_cast<uint8_t>((c01 >> 8) & 0xFFu),
-                                  static_cast<uint8_t>((c11 >> 8) & 0xFFu),
-                                  fx, fy);
-    const uint8_t b = lerpChannel(static_cast<uint8_t>((c00 >> 16) & 0xFFu),
-                                  static_cast<uint8_t>((c10 >> 16) & 0xFFu),
-                                  static_cast<uint8_t>((c01 >> 16) & 0xFFu),
-                                  static_cast<uint8_t>((c11 >> 16) & 0xFFu),
-                                  fx, fy);
-    const uint8_t a = lerpChannel(static_cast<uint8_t>((c00 >> 24) & 0xFFu),
-                                  static_cast<uint8_t>((c10 >> 24) & 0xFFu),
-                                  static_cast<uint8_t>((c01 >> 24) & 0xFFu),
-                                  static_cast<uint8_t>((c11 >> 24) & 0xFFu),
-                                  fx, fy);
-
-    return static_cast<uint32_t>(r) |
-           (static_cast<uint32_t>(g) << 8) |
-           (static_cast<uint32_t>(b) << 16) |
-           (static_cast<uint32_t>(a) << 24);
+    // Four channels at once: top/bottom lerp in x, then y, rounded half away from zero
+    // (values are non-negative, so trunc(v + 0.5)) and clamped to 0..255.
+    const __m128i zero = _mm_setzero_si128();
+    auto unpack = [&](uint32_t c) -> __m128
+    {
+        const __m128i bytes = _mm_cvtsi32_si128(static_cast<int>(c));
+        return _mm_cvtepi32_ps(_mm_unpacklo_epi16(_mm_unpacklo_epi8(bytes, zero), zero));
+    };
+    const __m128 p00 = unpack(c00), p10 = unpack(c10), p01 = unpack(c01), p11 = unpack(c11);
+    const __m128 vfx = _mm_set1_ps(fx), vfy = _mm_set1_ps(fy);
+    const __m128 top = _mm_add_ps(p00, _mm_mul_ps(_mm_sub_ps(p10, p00), vfx));
+    const __m128 bottom = _mm_add_ps(p01, _mm_mul_ps(_mm_sub_ps(p11, p01), vfx));
+    const __m128 value = _mm_add_ps(top, _mm_mul_ps(_mm_sub_ps(bottom, top), vfy));
+    const __m128 clamped = _mm_min_ps(_mm_max_ps(_mm_add_ps(value, _mm_set1_ps(0.5f)), _mm_setzero_ps()), _mm_set1_ps(255.0f));
+    const __m128i lanes = _mm_cvttps_epi32(clamped);
+    const __m128i packed16 = _mm_packs_epi32(lanes, lanes);
+    return static_cast<uint32_t>(_mm_cvtsi128_si32(_mm_packus_epi16(packed16, packed16)));
 }
 
 void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
@@ -1876,6 +1888,7 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
     PresentationFrame result{};
     const GSPmodeState pmode = decodePmode(request.pmode);
     const GSSmode2State smode2 = decodeSMode2(request.smode2);
+    const bool fieldFramebuffer = isFieldFramebuffer(request.smode2);
     const bool fieldMode = smode2.interlaced && !smode2.frameMode;
     const bool oddField = (request.vsyncTick & 1ull) != 0ull;
     const GSFrameReg displayFrame1 = decodeDisplayFrame(request.dispfb1);
@@ -1900,6 +1913,9 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
                           std::vector<uint8_t> &pixels,
                           bool &usedPreferred) -> bool
     {
+        const uint32_t displayHeight = height;
+        if (fieldFramebuffer)
+            height = (height + 1u) / 2u;
         selected = displayFrame;
         pixels.clear();
         usedPreferred = false;
@@ -1929,6 +1945,8 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
                 break;
             }
         }
+        if (fieldFramebuffer)
+            expandFieldScanout(pixels, displayHeight);
         return true;
     };
 

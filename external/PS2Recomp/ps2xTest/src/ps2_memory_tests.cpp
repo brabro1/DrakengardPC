@@ -531,6 +531,49 @@ void register_ps2_memory_tests()
             t.Equals(sw, 0x00008001u, "zero-extend w");
         });
 
+        tc.Run("VIF0 UNPACK decodes compressed formats like VIF1", [](TestCase &t)
+        {
+            PS2Memory mem;
+            t.IsTrue(mem.initialize(), "PS2Memory initialize should succeed");
+            std::memset(mem.getVU0Data(), 0, PS2_VU0_DATA_SIZE);
+
+            // UNPACK V3-16 (opcode 0x69), num=1, addr=3, bit15 set: VIF0 has no TOPS offset.
+            std::vector<uint8_t> packet;
+            appendU32(packet, makeVifCmd(0x69u, 1u, 0x8003u));
+            const uint16_t comps[3] = {0xFFFEu, 0x0002u, 0x8000u};
+            for (uint16_t c : comps)
+            {
+                const size_t pos = packet.size();
+                packet.resize(pos + sizeof(uint16_t));
+                std::memcpy(packet.data() + pos, &c, sizeof(uint16_t));
+            }
+            packet.resize(packet.size() + 2u); // word alignment padding
+            // UNPACK V4-8 (opcode 0x6E), num=1, addr=0x104 wraps to 4 in 256-qword VU0 memory.
+            appendU32(packet, makeVifCmd(0x6Eu, 1u, 0x4104u)); // zero-extend
+            appendU32(packet, 0x80FF0102u);
+            // UNPACK V4-5 (opcode 0x6F), num=1, addr=5: RGBA5551 expands to 8 bits per channel.
+            appendU32(packet, makeVifCmd(0x6Fu, 1u, 0x0005u));
+            appendU32(packet, 0x0000FFFFu);
+            mem.processVIF0Data(packet.data(), static_cast<uint32_t>(packet.size()));
+
+            const uint8_t *vu0 = mem.getVU0Data();
+            uint32_t v[4]{};
+            std::memcpy(v, vu0 + 3u * 16u, sizeof(v));
+            t.Equals(v[0], 0xFFFFFFFEu, "V3-16 x sign-extended at absolute VU0 address");
+            t.Equals(v[1], 0x00000002u, "V3-16 y");
+            t.Equals(v[2], 0xFFFF8000u, "V3-16 z");
+            std::memcpy(v, vu0 + 4u * 16u, sizeof(v));
+            t.Equals(v[0], 0x02u, "V4-8 x");
+            t.Equals(v[1], 0x01u, "V4-8 y");
+            t.Equals(v[2], 0xFFu, "V4-8 z zero-extended");
+            t.Equals(v[3], 0x80u, "V4-8 w zero-extended");
+            std::memcpy(v, vu0 + 5u * 16u, sizeof(v));
+            t.Equals(v[0], 0xF8u, "V4-5 r");
+            t.Equals(v[1], 0xF8u, "V4-5 g");
+            t.Equals(v[2], 0xF8u, "V4-5 b");
+            t.Equals(v[3], 0x80u, "V4-5 a");
+        });
+
         tc.Run("VIF UNPACK bit15 adds TOPS to destination address", [](TestCase &t)
         {
             PS2Memory mem;
@@ -1057,6 +1100,55 @@ void register_ps2_memory_tests()
             t.Equals(mem.gifCopyCount(), 1ull, "GIF DMA should increment gifCopyCount");
             t.IsTrue((mem.readIORegister(kGifCh + 0x00u) & 0x100u) == 0u, "GIF CHCR STR bit should be cleared after drain");
             t.Equals(mem.readIORegister(kGifCh + 0x20u), 0u, "GIF QWC should be cleared after drain");
+        });
+
+        tc.Run("toSPR normal DMA can source from VU0 data memory", [](TestCase &t)
+        {
+            PS2Memory mem;
+            t.IsTrue(mem.initialize(), "PS2Memory initialize should succeed");
+            constexpr uint32_t kToSpr = 0x1000D400u;
+            uint8_t *vu0 = mem.getVU0Data();
+            for (uint32_t i = 0; i < 32u; ++i)
+                vu0[0x40u + i] = static_cast<uint8_t>(0x10u + i);
+            mem.writeIORegister(kToSpr + 0x10u, 0x11004040u); // MADR in VU0 data
+            mem.writeIORegister(kToSpr + 0x20u, 2u);          // QWC
+            mem.writeIORegister(kToSpr + 0x80u, 0x3FF0u);     // SADR wraps after one quadword
+            mem.writeIORegister(kToSpr + 0x00u, 0x101u);      // STR, normal mode
+            const uint8_t *spr = mem.getScratchpad();
+            t.Equals(static_cast<uint32_t>(spr[0x3FF0u]), 0x10u, "first quadword at SADR");
+            t.Equals(static_cast<uint32_t>(spr[0x0000u]), 0x20u, "second quadword wraps to scratchpad start");
+            t.Equals(mem.readIORegister(kToSpr + 0x20u), 0u, "QWC cleared");
+            t.Equals(mem.readIORegister(kToSpr + 0x10u), 0x11004060u, "MADR advanced");
+        });
+
+        tc.Run("toSPR source chain follows CNT/REF/END tags", [](TestCase &t)
+        {
+            PS2Memory mem;
+            t.IsTrue(mem.initialize(), "PS2Memory initialize should succeed");
+            constexpr uint32_t kToSpr = 0x1000D400u;
+            uint8_t *ram = mem.getRDRAM();
+            auto putTag = [&](uint32_t at, uint32_t id, uint32_t qwc, uint32_t addr)
+            {
+                const uint32_t w0 = (id << 28) | qwc;
+                std::memcpy(ram + at, &w0, 4);
+                std::memcpy(ram + at + 4, &addr, 4);
+            };
+            putTag(0x1000u, 1u, 1u, 0u);          // CNT: 1 QW inline at 0x1010, next tag 0x1020
+            std::memset(ram + 0x1010u, 0xA1, 16);
+            putTag(0x1020u, 3u, 1u, 0x2000u);     // REF: 1 QW from 0x2000, next tag 0x1030
+            std::memset(ram + 0x2000u, 0xB2, 16);
+            putTag(0x1030u, 7u, 1u, 0u);          // END: 1 QW inline at 0x1040
+            std::memset(ram + 0x1040u, 0xC3, 16);
+            mem.writeIORegister(kToSpr + 0x30u, 0x1000u); // TADR
+            mem.writeIORegister(kToSpr + 0x20u, 0u);
+            mem.writeIORegister(kToSpr + 0x80u, 0x100u);
+            mem.writeIORegister(kToSpr + 0x00u, 0x105u);  // STR, chain mode
+            const uint8_t *spr = mem.getScratchpad();
+            t.Equals(static_cast<uint32_t>(spr[0x100u]), 0xA1u, "CNT payload");
+            t.Equals(static_cast<uint32_t>(spr[0x110u]), 0xB2u, "REF payload");
+            t.Equals(static_cast<uint32_t>(spr[0x120u]), 0xC3u, "END payload");
+            t.Equals(mem.readIORegister(kToSpr + 0x80u), 0x130u, "SADR advanced by 3 QW");
+            t.IsTrue((mem.readIORegister(kToSpr + 0x00u) & 0x100u) == 0u, "STR cleared at END");
         });
 
         tc.Run("GIF DMA can source from scratchpad", [](TestCase &t)

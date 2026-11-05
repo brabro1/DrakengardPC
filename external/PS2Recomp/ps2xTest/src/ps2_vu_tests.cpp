@@ -81,6 +81,26 @@ void register_ps2_vu_tests()
 {
     MiniTest::Case("PS2VU0Math", [](TestCase &tc)
     {
+        tc.Run("Macro FMAC MAC flags: lane order, masking, sticky status", [](TestCase &t)
+        {
+            R5900Context ctx{};
+            ctx.vu0_status = 0x0030u; // D and I current bits must survive
+            // x = -1 (S), y = 0 (Z), z = -0 (S and Z), w = 2 (none)
+            __m128 res = _mm_setr_ps(-1.0f, 0.0f, -0.0f, 2.0f);
+            PS2_VU0_SET_MAC(&ctx, res, 0xFu);
+            // Z bits: y=4, z=2 -> 0x6; S bits: x=8, z=2 -> 0xA0
+            t.Equals(ctx.vu0_mac_flags, 0x00A6u, "MAC Z/S bits use x=8,y=4,z=2,w=1");
+            t.Equals(static_cast<uint32_t>(ctx.vu0_status), 0x00F3u, "status sets Z,S and their sticky bits, keeps D/I");
+
+            PS2_VU0_SET_MAC(&ctx, res, 0x1u); // only w written: no flags
+            t.Equals(ctx.vu0_mac_flags, 0u, "lanes outside dest are cleared");
+            t.Equals(static_cast<uint32_t>(ctx.vu0_status), 0x00F0u, "current bits clear, sticky bits stay");
+
+            const __m128 big = _mm_castsi128_ps(_mm_setr_epi32(0x7F800000, 0, 0, 0));
+            PS2_VU0_SET_MAC(&ctx, big, 0x8u);
+            t.Equals(ctx.vu0_mac_flags, 0x8000u, "exponent-255 result reports overflow on x");
+        });
+
         tc.Run("MulVector_componentwise", [](TestCase &t)
         {
             VuEnv env;

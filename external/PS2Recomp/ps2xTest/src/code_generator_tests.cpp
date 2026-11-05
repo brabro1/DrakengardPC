@@ -478,6 +478,35 @@ void register_code_generator_tests()
         t.IsTrue(generated.find("label_1008:") == std::string::npos, "delay slot without incoming branch should not get a label");
     });
 
+    tc.Run("R5900 signed zero-compare branches test the 64-bit register", [](TestCase &t) {
+        struct Case { uint32_t opcode; uint32_t rt; const char *expected; };
+        const Case cases[] = {
+            {OPCODE_BLEZ, 0u, "GPR_S64(ctx, 9) <= 0"},
+            {OPCODE_BGTZ, 0u, "GPR_S64(ctx, 9) > 0"},
+            {OPCODE_REGIMM, REGIMM_BLTZ, "GPR_S64(ctx, 9) < 0"},
+            {OPCODE_REGIMM, REGIMM_BGEZ, "GPR_S64(ctx, 9) >= 0"},
+        };
+        for (const Case &c : cases)
+        {
+            Function func;
+            func.name = "signed_branch";
+            func.start = 0x3000;
+            func.end = 0x3010;
+            func.isRecompiled = true;
+            func.isStub = false;
+            Instruction branch = makeBranch(0x3000, 1);
+            branch.opcode = c.opcode;
+            branch.rs = 9;
+            branch.rt = c.rt;
+            std::vector<Instruction> instructions{branch, makeNop(0x3004), makeNop(0x3008), makeNop(0x300c)};
+            CodeGenerator gen({}, {});
+            const std::string generated = gen.generateFunction(func, instructions, false);
+            t.IsTrue(generated.find(c.expected) != std::string::npos, c.expected);
+            t.IsTrue(generated.find("GPR_S32(ctx, 9)") == std::string::npos,
+                     "R5900 branches must not truncate the register to 32 bits");
+        }
+    });
+
     tc.Run("labels delay slot when it is a branch target", [](TestCase &t) {
         Function func;
         func.name = "delay_slot_label";
@@ -1318,6 +1347,55 @@ void register_code_generator_tests()
                 msg << "VU0 S2 0x" << std::hex << value << " should be mapped";
                 t.IsTrue(out.find("Unhandled VU0 Special2") == std::string::npos, msg.str().c_str());
             }
+        });
+
+        tc.Run("VU0 FMAC updates MAC flags and VF0 writes are discarded", [](TestCase &t) {
+            CodeGenerator gen({}, {});
+            auto make = [](uint32_t function, uint8_t fd, uint8_t field) {
+                Instruction inst{};
+                inst.opcode = OPCODE_COP2;
+                inst.rs = COP2_CO;
+                inst.rd = 12; // fs
+                inst.rt = 14; // ft
+                inst.sa = fd;
+                inst.function = function;
+                inst.vectorInfo.vectorField = field;
+                return inst;
+            };
+            // vsub.xyzw vf0, vf12, vf14 (the game's compare idiom; followed by cfc2 vi17)
+            const std::string cmp = gen.translateInstruction(make(VU0_S1_VSUB, 0, 0xF));
+            t.IsTrue(cmp.find("PS2_VU0_SET_MAC(ctx, res, 15u);") != std::string::npos, "VSUB must update MAC flags");
+            t.IsTrue(cmp.find("ctx->vu0_vf[0] = ") == std::string::npos, "VSUB into VF0 must not store");
+            t.IsTrue(cmp.find("(void)(") != std::string::npos, "discarded VF0 value is still evaluated");
+
+            const std::string add = gen.translateInstruction(make(VU0_S1_VADD, 3, 0x8));
+            t.IsTrue(add.find("PS2_VU0_SET_MAC(ctx, res, 8u); ctx->vu0_vf[3] = ") != std::string::npos,
+                     "flags are computed before the vf[fd] write-back");
+
+            const std::string mx = gen.translateInstruction(make(VU0_S1_VMAX, 3, 0xF));
+            t.IsTrue(mx.find("PS2_VU0_SET_MAC") == std::string::npos, "MAX does not touch MAC flags");
+
+            Instruction adda = make(0x3C, 0, 0x6);
+            adda.raw = ((VU0_S2_VADDA >> 2) << 6) | (VU0_S2_VADDA & 3u);
+            const std::string acc = gen.translateInstruction(adda);
+            t.IsTrue(acc.find("PS2_VU0_SET_MAC(ctx, res, 6u); ctx->vu0_acc = ") != std::string::npos,
+                     "accumulator FMAC forms update MAC flags");
+
+            Instruction qmtc2{};
+            qmtc2.opcode = OPCODE_COP2;
+            qmtc2.rs = COP2_QMTC2;
+            qmtc2.rt = 5;
+            qmtc2.rd = 0;
+            const std::string mov = gen.translateInstruction(qmtc2);
+            t.IsTrue(mov.find("ctx->vu0_vf[0] = ") == std::string::npos, "QMTC2 to VF0 must not store");
+
+            Instruction lqc2{};
+            lqc2.opcode = OPCODE_LQC2;
+            lqc2.rs = 17;
+            lqc2.rt = 0;
+            const std::string load = gen.translateInstruction(lqc2);
+            t.IsTrue(load.find("ctx->vu0_vf[0] = ") == std::string::npos, "LQC2 to VF0 must not store");
+            t.IsTrue(load.find("READ128") != std::string::npos, "LQC2 to VF0 still performs the load");
         });
 
         tc.Run("VU0 S1 uses fd/fs/ft fields (sa/rd/rt)", [](TestCase &t) {

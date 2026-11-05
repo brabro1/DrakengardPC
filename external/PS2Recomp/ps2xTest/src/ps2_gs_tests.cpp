@@ -1740,6 +1740,39 @@ void register_ps2_gs_tests()
                      "field presentation should still preserve different source content across field rows");
         });
 
+        tc.Run("INT+FFMD presentation scans a half-height field framebuffer", [](TestCase &t)
+        {
+            std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
+            GSRegisters regs{};
+            regs.pmode = 0x0001ull;
+            regs.smode2 = 0x0003ull; // INT + FFMD: framebuffer holds one 224-line field
+            regs.dispfb1 = 0ull | (10ull << 9) | (static_cast<uint64_t>(GS_PSM_CT32) << 15);
+            regs.display1 = (639ull << 32) | (447ull << 44);
+
+            GS gs;
+            gs.init(vram.data(), static_cast<uint32_t>(vram.size()), &regs);
+            writeReferencePSMCT32Pixel(vram, 0u, 10u, 0u, 0u, 0x000000FFu);
+            writeReferencePSMCT32Pixel(vram, 0u, 10u, 0u, 1u, 0x0000FF00u);
+            writeReferencePSMCT32Pixel(vram, 0u, 10u, 0u, 223u, 0x00FF0000u);
+            writeReferencePSMCT32Pixel(vram, 0u, 10u, 0u, 224u, 0x00FFFFFFu); // next buffer, never shown
+            gs.latchHostPresentationFrame();
+
+            std::vector<uint8_t> frame;
+            uint32_t width = 0u, height = 0u;
+            t.IsTrue(gs.copyLatchedHostPresentationFrame(frame, width, height), "field framebuffer should present");
+            t.Equals(height, 448u, "display height stays 448");
+            auto px = [&](uint32_t row) -> uint32_t
+            {
+                const size_t off = static_cast<size_t>(row) * 640u * 4u;
+                return static_cast<uint32_t>(frame[off]) | (static_cast<uint32_t>(frame[off + 1u]) << 8) |
+                       (static_cast<uint32_t>(frame[off + 2u]) << 16);
+            };
+            t.Equals(px(0u), 0x0000FFu, "display row 0 = field row 0");
+            t.Equals(px(1u), 0x0000FFu, "display row 1 doubles field row 0");
+            t.Equals(px(2u), 0x00FF00u, "display row 2 = field row 1");
+            t.Equals(px(447u), 0xFF0000u, "last display row = field row 223, not the next buffer");
+        });
+
         tc.Run("GIF PACKED A+D writes DISPFB1 and DISPLAY1 privileged registers", [](TestCase &t)
         {
             std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
