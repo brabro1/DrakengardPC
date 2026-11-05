@@ -50,3 +50,6 @@ CLAUDE.local.md
 # Player files: settings written by the launcher, memory card backups
 /DrakengardPC.ini
 /save_backups/
+
+# Release packages (tools/package_launcher.py)
+/dist/

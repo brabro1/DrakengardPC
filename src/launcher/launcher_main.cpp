@@ -41,7 +41,7 @@ int main()
         running = app.frame();
         rlImGuiEnd();
         EndDrawing();
-        if (shot && ++frames == 90)
+        if (shot && (app.busy() ? (frames = 0, false) : ++frames == 90))
         {
             Image image = LoadImageFromScreen();
             ExportImage(image, shot);

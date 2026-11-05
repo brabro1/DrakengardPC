@@ -35,6 +35,9 @@ pacman -S --needed mingw-w64-clang-x86_64-toolchain mingw-w64-clang-x86_64-cmake
 ```
 
 - Python 3.11+ and Git for Windows.
+
+Releases: `python -I tools/package_launcher.py --version <v>` packs the launcher, its read-me
+and the licenses into `dist/DrakengardPC-Launcher-<v>.zip`.
 - About 3 GB free for `work/` and `build/`.
 
 ## Manual build
@@ -47,8 +50,15 @@ export PATH=/c/msys64/clang64/bin:$PATH
 ```
 
 ```bash
-git submodule update --init --recursive
+git submodule update --init external/parallel-gs
 ```
+
+```bash
+cd external/parallel-gs && bash checkout_submodules.sh && cd ../..
+```
+
+(Only Granite, volk and Vulkan-Headers are needed. A recursive checkout pulls all of
+Granite's third-party code and fails on Windows path-length limits.)
 
 ```bash
 cmake -S external/PS2Recomp -B build/ps2recomp -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_FLAGS=-msse4.1 -DCMAKE_CXX_FLAGS=-msse4.1 -DPS2X_BUILD_STUDIO=OFF -DPS2X_ENABLE_SCCACHE=OFF -DFETCHCONTENT_BASE_DIR=build/_deps

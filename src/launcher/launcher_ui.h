@@ -16,6 +16,7 @@ namespace dkg::launcher
         void shutdown();
         void setPage(int page); // for screenshots in tests
         void reload(); // re-reads the DrakengardPC folder and its settings
+        bool busy() const; // downloading or building
 
         struct State; // public so the page functions in launcher_ui.cpp can use it
 

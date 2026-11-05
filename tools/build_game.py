@@ -111,13 +111,22 @@ def configure_game(env: dict) -> None:
 
 
 def fetch_renderer(env: dict) -> bool:
-    if os.path.isfile(os.path.join(ROOT, "external", "parallel-gs", "CMakeLists.txt")):
+    """paraLLEl-GS and only the Granite parts it needs (its checkout_submodules.sh). A recursive
+    checkout pulls all of Granite's third-party code and fails on Windows path-length limits."""
+    pgs = os.path.join(ROOT, "external", "parallel-gs")
+    needed = [os.path.join(pgs, "CMakeLists.txt"), os.path.join(pgs, "Granite", "CMakeLists.txt"),
+              os.path.join(pgs, "Granite", "third_party", "volk", "volk.h"),
+              os.path.join(pgs, "Granite", "third_party", "khronos", "vulkan-headers", "include")]
+    if all(os.path.exists(p) for p in needed):
         return True
     if not os.path.isdir(os.path.join(ROOT, ".git")):
         say("@@error This folder is not a git clone, so the GPU renderer source cannot be fetched. "
-            "Download DrakengardPC with: git clone --recursive https://github.com/brabro1/DrakengardPC.git")
+            "Download DrakengardPC with: git clone https://github.com/brabro1/DrakengardPC.git")
         return False
-    run(["git", "submodule", "update", "--init", "--recursive"], env)
+    run(["git", "-C", ROOT, "submodule", "update", "--init", "external/parallel-gs"], env)
+    run(["git", "-C", pgs, "submodule", "update", "--init", "Granite"], env)
+    run(["git", "-C", os.path.join(pgs, "Granite"), "submodule", "update", "--init",
+         "third_party/volk", "third_party/khronos/vulkan-headers"], env)
     return True
 
 

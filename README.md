@@ -133,32 +133,35 @@ Details: [docs/FEATURES.md](docs/FEATURES.md).
 2. **Python** — download from [python.org](https://www.python.org/downloads/windows/). In the
    installer, **tick "Add python.exe to PATH"** before you click *Install*.
 3. **MSYS2** — download from [msys2.org](https://www.msys2.org/) and install it to the default
-   folder `C:\msys64`. That's all; DrakengardPC installs the compiler into it for you.
+   folder `C:\msys64`. That's all; the launcher installs the compiler into it for you.
 
-### Step 2 — Get DrakengardPC and its launcher (once)
+### Step 2 — Get the launcher (once)
 
-Open **Command Prompt** in the folder where you want DrakengardPC (for example Documents) and
-run these two lines:
+1. Download **DrakengardPC-Launcher-….zip** from the
+   [Releases page](https://github.com/brabro1/DrakengardPC/releases).
+2. Extract it into an empty folder, for example `Documents\DrakengardPC`.
+3. Start **DrakengardPC Launcher.exe** and press **Download DrakengardPC**. It fetches the
+   project's files (about 2 minutes) into a `DrakengardPC` folder next to it.
+
+<details>
+<summary>Prefer the command line? (for developers)</summary>
 
 ```bash
-git clone --recursive https://github.com/brabro1/DrakengardPC.git
+git clone https://github.com/brabro1/DrakengardPC.git
 ```
 
 ```bash
 cd DrakengardPC && python -I tools/build_game.py --launcher
 ```
 
-The second line builds **DrakengardPC Launcher.exe**. The first time it also installs the
-compiler into MSYS2 (about 2 GB download, a few minutes). The launcher appears in
-`DrakengardPC\build\game\`. Right-click it → *Send to* → *Desktop (create shortcut)* to keep it
-handy.
+This builds the launcher in `DrakengardPC\build\game\` (the first time it also installs the
+compiler into MSYS2).
 
-> A ready-to-download launcher is planned. It will download DrakengardPC by itself, so Step 2
-> becomes a single click.
+</details>
 
 ### Step 3 — Build the game from your disc (once)
 
-Start **DrakengardPC Launcher**:
+In **DrakengardPC Launcher**:
 
 1. **Game** page → *Choose disc image…* → pick your `Drakengard (USA).iso`. It should say
    **"Drakengard (USA) v1.00 – supported"**.
@@ -169,7 +172,8 @@ Start **DrakengardPC Launcher**:
 ### Step 4 — Play
 
 Press **PLAY** in the launcher. You can also start `DrakengardPC.exe` (in
-`DrakengardPC\build\game\`) directly; it uses the launcher's settings.
+`DrakengardPC\build\game\`) directly; it uses the launcher's settings. Right-click it →
+*Send to* → *Desktop (create shortcut)* for a desktop icon.
 
 ## Controls
 
@@ -241,7 +245,8 @@ Testing on different PCs and reporting what happens is very useful. Developers: 
 ## Updating
 
 Open Command Prompt in the `DrakengardPC` folder and run `git pull`. Then press **Rebuild the
-game** on the launcher's Build page.
+game** on the launcher's Build page. New launcher versions appear on the
+[Releases page](https://github.com/brabro1/DrakengardPC/releases).
 
 ---
 

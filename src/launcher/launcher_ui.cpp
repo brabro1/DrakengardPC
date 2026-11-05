@@ -1091,11 +1091,22 @@ namespace dkg::launcher
             }
             if (!st.downloading)
             {
-                if (accentButton(ICON_FA_FOLDER_OPEN "  Download DrakengardPC", ImVec2(300, 44), git))
+                static const bool s_auto = std::getenv("DKG_LAUNCHER_AUTODOWNLOAD") != nullptr; // tests
+                static bool s_autoStarted = false;
+                const bool autoStart = s_auto && !s_autoStarted && git;
+                s_autoStarted = s_autoStarted || autoStart;
+                if (accentButton(ICON_FA_FOLDER_OPEN "  Download DrakengardPC", ImVec2(300, 44), git) || autoStart)
                 {
-                    const std::wstring cmd = L"git clone --recursive --progress " +
-                                             std::wstring(kRepoUrl, kRepoUrl + std::strlen(kRepoUrl)) + L".git " +
-                                             quote(st.root);
+                    // The project, then only the GPU renderer parts it builds with (a recursive clone
+                    // pulls all of Granite's third-party code and hits Windows path-length limits).
+                    const std::wstring dir = st.root.wstring();
+                    const std::wstring pgs = (st.root / "external" / "parallel-gs").wstring();
+                    const std::wstring inner =
+                        L"git clone --progress " + std::wstring(kRepoUrl, kRepoUrl + std::strlen(kRepoUrl)) + L".git \"" + dir +
+                        L"\" && git -C \"" + dir + L"\" submodule update --init external/parallel-gs" +
+                        L" && git -C \"" + pgs + L"\" submodule update --init Granite" +
+                        L" && git -C \"" + pgs + L"\\Granite\" submodule update --init third_party/volk third_party/khronos/vulkan-headers";
+                    const std::wstring cmd = L"cmd.exe /d /s /c \"" + inner + L"\"";
                     st.log.clear();
                     st.buildError.clear();
                     st.downloading = st.download.start(cmd, st.root.parent_path());
@@ -1307,6 +1318,11 @@ namespace dkg::launcher
             lastSave = GetTime();
         }
         return !quit;
+    }
+
+    bool LauncherApp::busy() const
+    {
+        return m->downloading || m->buildState == State::BuildState::Running;
     }
 
     void LauncherApp::setPage(int page)
